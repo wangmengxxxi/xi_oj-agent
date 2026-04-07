@@ -1,0 +1,51 @@
+@import './base.css';
+
+/* 判题状态色 */
+:root {
+  --color-accepted: #00AF9B;
+  --color-wrong: #EF4743;
+  --color-tle: #F0AD4E;
+  --color-pending: #8C8C8C;
+  --color-brand: #FFA116;
+  --color-text-main: #262626;
+  --color-text-sub: #595959;
+  --color-text-weak: #8C8C8C;
+  --color-border: #EBEBEB;
+  --color-bg: #FFFFFF;
+  --color-bg-soft: #F7F8FA;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text-main);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  margin: 0;
+  padding: 0;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* 难度标签色 */
+.difficulty-easy { color: var(--color-accepted); }
+.difficulty-medium { color: #FFB800; }
+.difficulty-hard { color: var(--color-wrong); }
+
+/* 判题状态标签 */
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.status-accepted { color: var(--color-accepted); }
+.status-wrong { color: var(--color-wrong); }
+.status-tle { color: var(--color-tle); }
+.status-pending { color: var(--color-pending); }

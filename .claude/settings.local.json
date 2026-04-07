@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm search:*)",
+      "Bash(npm info:*)",
+      "Bash(npm list:*)",
+      "Bash(npx vue-tsc:*)",
+      "Bash(npx vite:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:mvnrepository.com)"
+    ]
+  }
+}
