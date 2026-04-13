@@ -101,4 +101,4 @@ knife4j:
         api-rule-resources:
           - com.yupi.springbootinit.controller
 codesandbox:   # 第一级
-  type: example # 第二级
+  type: remote # 第二级

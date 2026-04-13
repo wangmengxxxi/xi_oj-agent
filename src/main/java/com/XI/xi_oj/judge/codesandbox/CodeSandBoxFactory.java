@@ -1,6 +1,7 @@
 package com.XI.xi_oj.judge.codesandbox;
 
 import com.XI.xi_oj.judge.codesandbox.impl.ExampleCodeSandBox;
+import com.XI.xi_oj.judge.codesandbox.impl.RemoteCodeSandBox;
 
 /***
  * 根据用户传入的字符串生成对应的沙箱代码实例
@@ -20,7 +21,7 @@ public class CodeSandBoxFactory {
                 return new ExampleCodeSandBox();
             // 当类型为"remote"时，创建并返回ExampleCodeSandBox实例
             case "remote":
-                return new ExampleCodeSandBox();
+                return new RemoteCodeSandBox();
             // 当类型为"thirdParty"时，创建并返回ExampleCodeSandBox实例
             case "thirdParty":
                 return new ExampleCodeSandBox();

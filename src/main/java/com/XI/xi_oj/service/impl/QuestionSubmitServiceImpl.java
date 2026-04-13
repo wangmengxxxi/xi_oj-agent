@@ -23,11 +23,14 @@ import com.XI.xi_oj.service.QuestionService;
 import com.XI.xi_oj.service.QuestionSubmitService;
 import com.XI.xi_oj.service.UserService;
 import com.XI.xi_oj.utils.SqlUtils;
+import com.XI.xi_oj.judge.JudgeService;
 import jakarta.annotation.Resource;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
@@ -44,6 +47,10 @@ public class QuestionSubmitServiceImpl extends ServiceImpl<QuestionSubmitMapper,
 
     @Resource
     private UserService userService;
+
+    @Lazy
+    @Resource
+    private JudgeService judgeService;
 
     /**
      * 提交题目
@@ -81,9 +88,11 @@ public class QuestionSubmitServiceImpl extends ServiceImpl<QuestionSubmitMapper,
         if (!save){
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "数据插入失败");
         }
-        //todo:执行判题服务
+        // 异步执行判题服务
+        long questionSubmitId = questionSubmit.getId();
+        CompletableFuture.runAsync(() -> judgeService.doJudge(questionSubmitId));
 
-        return questionSubmit.getId();
+        return questionSubmitId;
     }
 
 

@@ -37,28 +37,30 @@ const LANGUAGE_OPTIONS = [
 ]
 
 const CODE_TEMPLATES: Record<string, string> = {
-  java: `import java.util.Scanner;
-
-public class Main {
+  java: `public class Main {
     public static void main(String[] args) {
-        Scanner sc = new Scanner(System.in);
+        // 输入通过命令行参数传入，例如：args[0] = "1", args[1] = "2"
         // 在此编写代码
     }
 }`,
   cpp: `#include <bits/stdc++.h>
 using namespace std;
 
-int main() {
-    ios::sync_with_stdio(false);
-    cin.tie(nullptr);
+int main(int argc, char* argv[]) {
+    // 输入通过命令行参数传入，例如：argv[1] = "1", argv[2] = "2"
     // 在此编写代码
     return 0;
 }`,
   go: `package main
 
-import "fmt"
+import (
+    "fmt"
+    "os"
+)
 
 func main() {
+    // 输入通过命令行参数传入，例如：os.Args[1] = "1", os.Args[2] = "2"
+    _ = os.Args
     // 在此编写代码
     fmt.Println()
 }`,

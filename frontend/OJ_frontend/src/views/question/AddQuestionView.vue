@@ -72,17 +72,31 @@ async function loadQuestion() {
       data = res.data.data
       if (data) {
         form.answer = data.answer ?? ''
-        form.judgeCase = data.judgeCase ?? [{ input: '', output: '' }]
+        // 后端返回原始实体，judgeCase/tags/judgeConfig 可能是 JSON 字符串，需解析
+        const judgeCase = typeof data.judgeCase === 'string'
+          ? JSON.parse(data.judgeCase)
+          : data.judgeCase
+        form.judgeCase = judgeCase ?? [{ input: '', output: '' }]
+        const tags = typeof data.tags === 'string'
+          ? JSON.parse(data.tags)
+          : data.tags
+        form.tags = tags ?? []
+        const judgeConfig = typeof data.judgeConfig === 'string'
+          ? JSON.parse(data.judgeConfig)
+          : data.judgeConfig
+        form.judgeConfig = { ...form.judgeConfig, ...judgeConfig }
+        form.title = data.title
+        form.content = data.content
       }
     } else {
       const res = await getQuestionVOById(editId.value)
       data = res.data.data
-    }
-    if (data) {
-      form.title = data.title
-      form.tags = data.tags ?? []
-      form.content = data.content
-      form.judgeConfig = { ...form.judgeConfig, ...data.judgeConfig }
+      if (data) {
+        form.title = data.title
+        form.tags = data.tags ?? []
+        form.content = data.content
+        form.judgeConfig = { ...form.judgeConfig, ...data.judgeConfig }
+      }
     }
   } catch (err: any) {
     Message.error(err?.message || '加载题目失败')
