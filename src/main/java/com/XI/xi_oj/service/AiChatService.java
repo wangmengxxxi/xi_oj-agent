@@ -11,7 +11,11 @@ public interface AiChatService {
 
     String chat(String chatId, Long userId, String message);
 
+    String chat(String chatId, Long userId, String message, Long questionId);
+
     Flux<String> chatStream(String chatId, Long userId, String message);
+
+    Flux<String> chatStream(String chatId, Long userId, String message, Long questionId);
 
     AiChatHistoryPageResponse getChatHistoryByCursor(Long userId, AiChatHistoryPageRequest req);
 

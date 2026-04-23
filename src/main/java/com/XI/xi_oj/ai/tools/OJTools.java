@@ -18,14 +18,24 @@ import org.springframework.stereotype.Component;
 @Component
 public class OJTools {
 
-    @Autowired
-    private QuestionService questionService; // 注入题目服务，用于处理题目相关操作
+    private static final ThreadLocal<Long> CURRENT_USER_ID = new ThreadLocal<>();
+
+    public static void setCurrentUserId(Long userId) {
+        CURRENT_USER_ID.set(userId);
+    }
+
+    public static void clearCurrentUserId() {
+        CURRENT_USER_ID.remove();
+    }
 
     @Autowired
-    private AiJudgeService judgeService; // 注入判题服务，用于处理代码判题相关操作
+    private QuestionService questionService;
 
     @Autowired
-    private WrongQuestionService wrongQuestionService; // 注入错题服务，用于处理错题记录相关操作
+    private AiJudgeService judgeService;
+
+    @Autowired
+    private WrongQuestionService wrongQuestionService;
 
     /**
      * 查询题目信息的工具方法
@@ -68,15 +78,18 @@ public class OJTools {
      */
     @Tool(
             name = "judge_user_code",
-            value = "对用户代码执行判题。参数包含：questionId、code、language、userId。"
+            value = "对用户代码执行判题。参数包含：questionId、code、language。"
     )
     public String judgeUserCode(
             @P("题目ID，Long类型") Long questionId,
             @P("用户提交的代码内容") String code,
-            @P("代码语言，例如 java / python / cpp") String language,
-            @P("当前用户ID，Long类型") Long userId
+            @P("代码语言，例如 java / python / cpp") String language
     ) {
-        JudgeResultDTO result = judgeService.submitCode(questionId, code, language, userId); // 提交代码进行判题
+        Long userId = CURRENT_USER_ID.get();
+        if (userId == null) {
+            return "无法获取当前用户信息，请重新登录。";
+        }
+        JudgeResultDTO result = judgeService.submitCode(questionId, code, language, userId);
         return String.format("""
                         判题结果：%s
                         耗时：%sms
@@ -98,13 +111,16 @@ public class OJTools {
      */
     @Tool(
             name = "query_user_wrong_question",
-            value = "按 userId 和 questionId 查询用户错题记录，返回错误代码、判题结果、历史分析和复习次数。"
+            value = "按题目ID查询当前用户的错题记录，返回错误代码、判题结果、历史分析和复习次数。"
     )
     public String queryUserWrongQuestion(
-            @P("用户ID，Long类型") Long userId,
             @P("题目ID，Long类型") Long questionId
     ) {
-        WrongQuestionVO wrongQuestion = wrongQuestionService.getByUserAndQuestion(userId, questionId); // 获取用户的错题记录
+        Long userId = CURRENT_USER_ID.get();
+        if (userId == null) {
+            return "无法获取当前用户信息，请重新登录。";
+        }
+        WrongQuestionVO wrongQuestion = wrongQuestionService.getByUserAndQuestion(userId, questionId);
         if (wrongQuestion == null) { // 如果未找到错题记录，返回提示信息
             return "未找到对应错题记录。";
         }

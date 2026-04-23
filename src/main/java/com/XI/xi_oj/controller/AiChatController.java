@@ -50,7 +50,7 @@ public class AiChatController {
     @PostMapping("/chat")
     public BaseResponse<String> chat(@RequestBody @Valid AiChatRequest request, HttpServletRequest httpRequest) {
         User loginUser = userService.getLoginUser(httpRequest);
-        String result = aiChatService.chat(request.getChatId(), loginUser.getId(), request.getMessage());
+        String result = aiChatService.chat(request.getChatId(), loginUser.getId(), request.getMessage(), request.getQuestionId());
         return ResultUtils.success(result);
     }
 
@@ -59,7 +59,7 @@ public class AiChatController {
     public Flux<ServerSentEvent<String>> chatStream(@RequestBody @Valid AiChatRequest request,
                                                     HttpServletRequest httpRequest) {
         User loginUser = userService.getLoginUser(httpRequest);
-        return aiChatService.chatStream(request.getChatId(), loginUser.getId(), request.getMessage())
+        return aiChatService.chatStream(request.getChatId(), loginUser.getId(), request.getMessage(), request.getQuestionId())
                 .map(token -> ServerSentEvent.<String>builder()
                         .data(toJson(singletonPayload("d", token == null ? "" : token)))
                         .build())

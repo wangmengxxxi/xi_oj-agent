@@ -9,6 +9,7 @@ import MdViewer from '@/components/MdViewer.vue'
 import CodeEditor from '@/components/CodeEditor.vue'
 import AiQuestionParse from '@/components/AiQuestionParse.vue'
 import QuestionComment from '@/components/QuestionComment.vue'
+import AiChatWidget from '@/components/AiChatWidget.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -460,6 +461,12 @@ onUnmounted(() => {
         </div>
       </div>
     </a-spin>
+
+    <AiChatWidget
+      v-if="question"
+      :question-id="questionId"
+      :question-title="question?.title"
+    />
   </div>
 </template>
 

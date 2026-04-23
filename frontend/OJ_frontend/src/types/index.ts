@@ -187,6 +187,7 @@ export interface QuestionSubmitQueryRequest {
 export interface AiChatRequest {
   chatId: string
   message: string
+  questionId?: number | string
 }
 
 export interface AiChatClearRequest {

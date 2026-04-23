@@ -11,4 +11,6 @@ public class AiChatRequest {
 
     @NotBlank(message = "message 不能为空")
     private String message;
+
+    private Long questionId;
 }
