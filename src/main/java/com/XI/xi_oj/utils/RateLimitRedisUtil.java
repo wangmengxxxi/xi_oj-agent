@@ -6,7 +6,6 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 
@@ -49,6 +48,30 @@ public class RateLimitRedisUtil {
                     "  return 0 " +
                     "end";
     /**
+     * 每日计数限流 Lua 脚本
+     * 逻辑：
+     *   1. 先 GET 当前计数，若 >= maxCount 则直接返回 0（拒绝），不递增
+     *   2. 若 < maxCount，INCR 原子自增，首次写入时设置 TTL，返回 1（放行）
+     *
+     * KEYS[1] = redis key
+     * ARGV[1] = 最大次数
+     * ARGV[2] = TTL（秒）
+     */
+    private static final String DAILY_COUNT_SCRIPT =
+            "local key = KEYS[1] " +
+                    "local maxCount = tonumber(ARGV[1]) " +
+                    "local ttl = tonumber(ARGV[2]) " +
+                    "local current = tonumber(redis.call('GET', key) or '0') " +
+                    "if current >= maxCount then " +
+                    "  return 0 " +
+                    "end " +
+                    "local newVal = redis.call('INCR', key) " +
+                    "if newVal == 1 then " +
+                    "  redis.call('EXPIRE', key, ttl) " +
+                    "end " +
+                    "return 1";
+
+    /**
      * 冷却时间限流 Lua 脚本
      * 对应 USER_QUESTION_COOLDOWN，同一用户对同一题目的重复提交冷却。
      * 逻辑：
@@ -68,6 +91,7 @@ public class RateLimitRedisUtil {
                     "end";
     private static final DefaultRedisScript<Long> SLIDING_WINDOW_REDIS_SCRIPT;
     private static final DefaultRedisScript<Long> COOLDOWN_REDIS_SCRIPT;
+    private static final DefaultRedisScript<Long> DAILY_COUNT_REDIS_SCRIPT;
     static {
         SLIDING_WINDOW_REDIS_SCRIPT = new DefaultRedisScript<>();
         SLIDING_WINDOW_REDIS_SCRIPT.setScriptText(SLIDING_WINDOW_SCRIPT);
@@ -75,6 +99,9 @@ public class RateLimitRedisUtil {
         COOLDOWN_REDIS_SCRIPT = new DefaultRedisScript<>();
         COOLDOWN_REDIS_SCRIPT.setScriptText(COOLDOWN_SCRIPT);
         COOLDOWN_REDIS_SCRIPT.setResultType(Long.class);
+        DAILY_COUNT_REDIS_SCRIPT = new DefaultRedisScript<>();
+        DAILY_COUNT_REDIS_SCRIPT.setScriptText(DAILY_COUNT_SCRIPT);
+        DAILY_COUNT_REDIS_SCRIPT.setResultType(Long.class);
     }
     /**
      * 滑动窗口限流检查
@@ -118,22 +145,21 @@ public class RateLimitRedisUtil {
     }
     /**
      * 用户每日计数限流检查（固定窗口，按自然日重置）
+     * 使用 Lua 脚本保证原子性：仅在未超限时才递增计数器，被拒请求不会多计数
      *
      * @param redisKey 格式：rl:user:{userId}:submit:day:{yyyyMMdd}
      * @param maxCount 每日最大次数
      * @return true=放行，false=被限流
      */
     public boolean dailyCountAllow(String redisKey, int maxCount) {
-        // INCR 原子自增，若超出 maxCount 则拒绝
-        Long count = stringStringRedisTemplate.opsForValue().increment(redisKey);
-        if (count == null) {
-            return true;
-        }
-        if (count == 1L) {
-            // 首次写入，设置到当天结束过期（86400秒，简化处理）
-            stringStringRedisTemplate.expire(redisKey, Duration.ofSeconds(86400));
-        }
-        return count <= maxCount;
+        List<String> keys = Collections.singletonList(redisKey);
+        Long result = stringStringRedisTemplate.execute(
+                DAILY_COUNT_REDIS_SCRIPT,
+                keys,
+                String.valueOf(maxCount),
+                String.valueOf(86400)
+        );
+        return Long.valueOf(1L).equals(result);
     }
 }
 

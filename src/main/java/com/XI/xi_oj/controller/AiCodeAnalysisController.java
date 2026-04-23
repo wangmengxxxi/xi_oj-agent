@@ -56,12 +56,11 @@ public class AiCodeAnalysisController {
 
     @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_CODE_USER_DAY},
             message = "AI代码分析调用过于频繁，请稍后再试")
-    @GetMapping(value = "/analysis/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> analyzeCodeStream(@RequestParam Long questionId,
-                                                           @RequestParam Long questionSubmitId,
+    @PostMapping(value = "/analysis/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> analyzeCodeStream(@RequestBody @Valid AiCodeAnalysisRequest request,
                                                            HttpServletRequest httpRequest) {
         User loginUser = userService.getLoginUser(httpRequest);
-        return aiCodeAnalysisService.analyzeCodeStream(loginUser.getId(), questionId, questionSubmitId)
+        return aiCodeAnalysisService.analyzeCodeStream(loginUser.getId(), request.getQuestionId(), request.getQuestionSubmitId())
                 .map(token -> ServerSentEvent.<String>builder()
                         .data(toJson(singletonPayload("d", token == null ? "" : token)))
                         .build())

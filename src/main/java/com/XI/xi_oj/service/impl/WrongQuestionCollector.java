@@ -38,12 +38,7 @@ public class WrongQuestionCollector {
                 existing.setWrongCode(code);
                 existing.setLanguage(language);
                 existing.setWrongJudgeResult(status);
-                existing.setWrongAnalysis(null);
-                existing.setReviewPlan(null);
-                existing.setSimilarQuestions(null);
                 existing.setIsReviewed(0);
-                existing.setReviewCount(0);
-                existing.setNextReviewTime(null);
                 wrongQuestionMapper.updateById(existing);
                 log.info("[WrongQuestion] updated userId={}, questionId={}, status={}", userId, questionId, status);
             } else {

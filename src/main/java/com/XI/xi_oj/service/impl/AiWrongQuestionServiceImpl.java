@@ -141,7 +141,7 @@ public class AiWrongQuestionServiceImpl implements AiWrongQuestionService {
                 .wrongCode(wrong.getWrongCode())
                 .language(defaultIfBlank(wrong.getLanguage(), "未知"))
                 .wrongJudgeResult(wrong.getWrongJudgeResult())
-                .errorMsg(wrong.getWrongJudgeResult())
+                .errorMsg("无详细错误信息")
                 .userId(userId)
                 .build();
     }
@@ -228,11 +228,11 @@ public class AiWrongQuestionServiceImpl implements AiWrongQuestionService {
         wrong.setWrongAnalysis(analysis);
         wrong.setReviewPlan("建议按 1 天、3 天、7 天节奏复习同类题型。");
         wrong.setSimilarQuestions(JSONUtil.toJsonStr(similarQuestionIds));
-        wrong.setIsReviewed(0);
-        if (wrong.getReviewCount() == null) {
+        if (wrong.getReviewCount() == null || wrong.getReviewCount() == 0) {
+            wrong.setIsReviewed(0);
             wrong.setReviewCount(0);
+            wrong.setNextReviewTime(calcNextReviewTime(1));
         }
-        wrong.setNextReviewTime(calcNextReviewTime(1));
         aiWrongQuestionMapper.updateById(wrong);
     }
 

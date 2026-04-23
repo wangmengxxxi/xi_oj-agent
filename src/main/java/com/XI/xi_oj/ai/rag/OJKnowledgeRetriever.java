@@ -54,7 +54,7 @@ public class OJKnowledgeRetriever {
         return result;
     }
 
-    public String doRetrieve(String query, int topK, double minScore) {
+    private String doRetrieve(String query, int topK, double minScore) {
         Embedding queryEmbedding = embeddingModel.embed(query).content();
         EmbeddingSearchRequest searchRequest = EmbeddingSearchRequest.builder()
                 .queryEmbedding(queryEmbedding)
@@ -67,6 +67,7 @@ public class OJKnowledgeRetriever {
 
         String context = matches.stream()
                 .filter(match -> match.score() >= minScore)
+                .filter(match -> match.embedded() != null)
                 .map(EmbeddingMatch::embedded)
                 .map(TextSegment::text)
                 .collect(Collectors.joining("\n\n"));
@@ -102,7 +103,7 @@ public class OJKnowledgeRetriever {
         return result;
     }
 
-    public List<Long> doretrieveSimilarQuestions(Long questionId, String questionContent, String difficulty) {
+    private List<Long> doretrieveSimilarQuestions(Long questionId, String questionContent, String difficulty) {
         Embedding queryEmbedding = embeddingModel.embed(questionContent).content();
         EmbeddingSearchRequest embeddingSearchRequest = EmbeddingSearchRequest.builder()
                 .queryEmbedding(queryEmbedding)
@@ -153,7 +154,7 @@ public class OJKnowledgeRetriever {
         return result;
     }
 
-    public List<EmbeddingMatch<TextSegment>> doretrieveByType(String query, int topK, double minScore) {
+    private List<EmbeddingMatch<TextSegment>> doretrieveByType(String query, int topK, double minScore) {
         Embedding queryEmbedding = embeddingModel.embed(query).content();
         return embeddingStore.search(
                 EmbeddingSearchRequest.builder()

@@ -55,12 +55,11 @@ public class AiChatController {
     }
 
     @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_CHAT_USER_DAY})
-    @GetMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> chatStream(@RequestParam String chatId,
-                                                    @RequestParam String message,
+    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> chatStream(@RequestBody @Valid AiChatRequest request,
                                                     HttpServletRequest httpRequest) {
         User loginUser = userService.getLoginUser(httpRequest);
-        return aiChatService.chatStream(chatId, loginUser.getId(), message)
+        return aiChatService.chatStream(request.getChatId(), loginUser.getId(), request.getMessage())
                 .map(token -> ServerSentEvent.<String>builder()
                         .data(toJson(singletonPayload("d", token == null ? "" : token)))
                         .build())

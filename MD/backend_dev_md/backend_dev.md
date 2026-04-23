@@ -309,10 +309,14 @@ CREATE TABLE IF NOT EXISTS ai_config
 |------------|--------------|-------------|
 | ai.global.enable | true | AI功能全局开关 |
 | ai.model.base_url | https://dashscope.aliyuncs.com/compatible-mode/v1 | 百炼OpenAI兼容端点，通常无需修改 |
-| ai.model.name | qwen-plus | 聊天模型名称（可选：qwen-turbo / qwen-plus / qwen-max） |
-| ai.model.embedding_name | text-embedding-v3 | 嵌入模型名称，修改后需重建向量索引 |
-| ai.rag.top_k | 3 | RAG检索返回条数（建议3-5） |
-| ai.rag.similarity_threshold | 0.7 | RAG最小相似度阈值（0-1，值越高检索越严格） |
+| ai.model.name | qwen-plus | 聊天模型名称（可选：qwen-turbo / qwen-plus / qwen-max）**⚠️ 修改后需重启服务** |
+| ai.model.embedding_name | text-embedding-v3 | 嵌入模型名称，修改后需重建向量索引 **⚠️ 修改后需重启服务** |
+| ai.rag.top_k | 3 | RAG检索返回条数（建议3-5）**⚠️ 修改后需重启服务** |
+| ai.rag.similarity_threshold | 0.7 | RAG最小相似度阈值（0-1，值越高检索越严格）**⚠️ 修改后需重启服务** |
+
+> **配置生效方式说明**：
+> - `ai.global.enable`、`ai.prompt.*` 等配置通过 Redis 缓存（TTL 5 分钟）读取，修改后无需重启，最多 5 分钟内全局生效；
+> - `ai.model.name`、`ai.model.embedding_name`、`ai.rag.top_k`、`ai.rag.similarity_threshold` 在 Spring Bean 初始化时读取并构建为单例客户端（`AiAgentFactory`），**修改后必须重启服务才能生效**。
 
 **API Key 配置方式（环境变量注入）**：
 ```yaml
@@ -1368,14 +1372,13 @@ public class AiChatController {
 
     /**
      * SSE 流式接口：每个 token 封装为 JSON {"d":"<token>"} 后推送
-     * 前端通过 EventSource 接收，解析 JSON 拼接完整文本
+     * 前端通过 fetch + ReadableStream 或 @microsoft/fetch-event-source 接收
      */
     @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_CHAT_USER_DAY})
-    @GetMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> chatStream(@RequestParam String chatId,
-                                                    @RequestParam String message,
+    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> chatStream(@RequestBody @Valid AiChatRequest request,
                                                     HttpServletRequest httpRequest) {
-        return ojChatAgent.chatStream(chatId, message)
+        return ojChatAgent.chatStream(request.getChatId(), request.getMessage())
                 .map(token -> {
                     try {
                         // 封装为 JSON，保留空格、换行、特殊字符
@@ -1545,9 +1548,9 @@ public class JudgeResultDTO {
 ---
 
 **② AiJudgeService 接口**
-新建文件：`src/main/java/com/XI/xi_oj/ai/judge/AiJudgeService.java`
+新建文件：`src/main/java/com/XI/xi_oj/service/AiJudgeService.java`
 ```java
-package com.XI.xi_oj.ai.judge;
+package com.XI.xi_oj.service;
 
 import com.XI.xi_oj.model.dto.judge.JudgeResultDTO;
 
@@ -1578,9 +1581,9 @@ public interface AiJudgeService {
 ---
 
 **③ AiJudgeServiceImpl——实现 `submitCode()`**
-新建文件：`src/main/java/com/XI/xi_oj/ai/judge/AiJudgeServiceImpl.java`
+新建文件：`src/main/java/com/XI/xi_oj/service/impl/AiJudgeServiceImpl.java`
 ```java
-package com.XI.xi_oj.ai.judge;
+package com.XI.xi_oj.service.impl;
 
 import cn.hutool.json.JSONUtil;
 import com.XI.xi_oj.common.ErrorCode;
@@ -1675,7 +1678,7 @@ public class AiJudgeServiceImpl implements AiJudgeService {
 ```
 
 > **设计说明**：
-> - `AiJudgeService` 放在 `ai/judge` 包下，与 `judge` 包的原有逻辑**物理隔离**，拆微服务时整个包迁移到 `ai-service` 即可。
+> - `AiJudgeService` 接口放在 `service` 包下，`AiJudgeServiceImpl` 放在 `service/impl` 包下，与原 `JudgeService` 接口同层，拆微服务时替换实现类即可。
 > - `JudgeService` 接口无需添加任何方法，判题核心逻辑保持不变。
 > - 微服务阶段只需将 `AiJudgeServiceImpl` 中的 `JudgeService judgeService` 替换为 Feign Client，`OJTools` 和接口层代码**零改动**。
 > - **source 字段隔离**：AI 工具调用的判题记录统一打上 `source='ai_tool'` 标记。`question_submit` 表需新增此列（见下方 SQL），`QuestionSubmit` 实体需添加对应字段；统计查询（solved_num / submit_num / acceptedNum）均需加 `WHERE source IS NULL OR source != 'ai_tool'` 过滤，避免 AI 测试行为污染用户真实统计数据。
@@ -1785,9 +1788,9 @@ public interface AiWrongQuestionMapper extends BaseMapper<AiWrongQuestion> {
 ---
 
 **⑥ WrongQuestionVO**
-新建文件：`src/main/java/com/XI/xi_oj/model/vo/WrongQuestionVO.java`
+新建文件：`src/main/java/com/XI/xi_oj/model/dto/question/WrongQuestionVO.java`
 ```java
-package com.XI.xi_oj.model.vo;
+package com.XI.xi_oj.model.dto.question;
 
 import com.XI.xi_oj.model.entity.AiWrongQuestion;
 import lombok.Data;
@@ -1849,7 +1852,7 @@ package com.XI.xi_oj.service;
 
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.XI.xi_oj.model.entity.AiWrongQuestion;
-import com.XI.xi_oj.model.vo.WrongQuestionVO;
+import com.XI.xi_oj.model.dto.question.WrongQuestionVO;
 
 /**
  * 针对表【ai_wrong_question(AI错题本)】的数据库操作 Service
@@ -1875,7 +1878,7 @@ package com.XI.xi_oj.service.impl;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.XI.xi_oj.mapper.AiWrongQuestionMapper;
 import com.XI.xi_oj.model.entity.AiWrongQuestion;
-import com.XI.xi_oj.model.vo.WrongQuestionVO;
+import com.XI.xi_oj.model.dto.question.WrongQuestionVO;
 import com.XI.xi_oj.service.WrongQuestionService;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
@@ -2225,7 +2228,7 @@ public class AiCodeAnalysisService {
 | 接口地址 | 请求方式 | 说明 |
 |---------|---------|------|
 | `/ai/code/analysis` | POST | 阻塞式代码分析，返回完整文本 |
-| `/ai/code/analysis/stream` | GET | SSE 流式代码分析（要求传 `questionId + questionSubmitId`） |
+| `/ai/code/analysis/stream` | POST | SSE 流式代码分析（RequestBody 传 `AiCodeAnalysisRequest`） |
 | `/ai/code/history` | GET | 查询当前登录用户的代码分析历史 |
 
 **`AiCodeAnalysisRequest` 入参口径**：
@@ -2295,9 +2298,8 @@ public class AiCodeAnalysisController {
                                             HttpServletRequest httpRequest) { ... }
 
     @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_CODE_USER_DAY})
-    @GetMapping(value = "/analysis/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> analyzeCodeStream(@RequestParam Long questionId,
-                                                           @RequestParam Long questionSubmitId,
+    @PostMapping(value = "/analysis/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> analyzeCodeStream(@RequestBody @Valid AiCodeAnalysisRequest request,
                                                            HttpServletRequest httpRequest) { ... }
 
     @GetMapping("/history")
@@ -2481,7 +2483,7 @@ public interface AiChatService {
 **`AiChatController.java`**：
 ```java
 POST /ai/chat
-GET  /ai/chat/stream
+POST /ai/chat/stream
 GET  /ai/chat/history
 POST /ai/chat/history/page
 POST /ai/chat/clear
@@ -2531,7 +2533,7 @@ POST /ai/chat/clear
 | 接口地址 | 请求方式 | 说明 |
 |---------|---------|------|
 | `/ai/question/parse` | POST | 阻塞式返回 AI 题目解析 + 相似题 ID |
-| `/ai/question/parse/stream` | GET | SSE 流式返回 AI 题目解析 |
+| `/ai/question/parse/stream` | POST | SSE 流式返回 AI 题目解析（RequestBody 传 `AiQuestionParseRequest`） |
 | `/ai/question/similar` | GET | 单独获取相似题 ID 列表 |
 
 **核心 Prompt 组装方式**：
@@ -2620,8 +2622,8 @@ public class AiQuestionParseController {
     }
 
     @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_QUESTION_USER_DAY})
-    @GetMapping(value = "/parse/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> parseQuestionStream(@RequestParam Long questionId,
+    @PostMapping(value = "/parse/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> parseQuestionStream(@RequestBody @Valid AiQuestionParseRequest request,
                                                              HttpServletRequest httpRequest) {
         ...
     }
@@ -2673,7 +2675,7 @@ public class AiQuestionParseController {
 |------|------|------|
 | `/ai/wrong-question/list` | GET | 获取当前登录用户的错题列表 |
 | `/ai/wrong-question/analysis` | GET | 阻塞式错题分析 |
-| `/ai/wrong-question/analysis/stream` | GET | SSE 流式错题分析 |
+| `/ai/wrong-question/analysis/stream` | POST | SSE 流式错题分析（RequestBody 传 `WrongQuestionReviewRequest`） |
 | `/ai/wrong-question/review` | POST | 标记已复习，并推进下次复习时间 |
 
 **Controller 入参 DTO**：
@@ -2766,30 +2768,28 @@ public interface AiWrongQuestionMapper extends BaseMapper<AiWrongQuestion> {
 ```java
 /**
  * AI 全局开关切面
- * 切点：com.xi.oj.controller.ai 包下所有 public 方法（按实际包名调整）
- * 效果：ai.global.enable=false 时，所有 AI 接口统一返回 403，前端据此隐藏 AI 入口
+ * 切点：匹配所有以 Ai 开头的 Controller（AiChatController、AiCodeAnalysisController、AiWrongQuestionController 等），
+ * 明确排除 AiConfigController（管理员配置接口不受 AI 开关影响）。
+ * KnowledgeImportController 和 RateLimitController 因命名不以 "Ai" 开头，不受 AI 开关影响——
+ * 这是有意为之：知识库导入和限流规则管理属于平台基础运维能力，不应因 AI 功能关闭而被禁用。
  */
 @Aspect
 @Component
 @Slf4j
 public class AiGlobalSwitchAspect {
 
-    @Autowired
+    @Resource
     private AiConfigService aiConfigService;
 
-    /**
-     * 切点：拦截 AI Controller 包下的所有公开方法
-     * 注意：将 com.xi.oj.controller.ai 替换为项目实际包路径
-     */
-    @Pointcut("execution(public * com.xi.oj.controller.ai..*(..))")
+    @Pointcut("execution(public * com.XI.xi_oj.controller.Ai*Controller.*(..)) && !within(com.XI.xi_oj.controller.AiConfigController)")
     public void aiControllerMethods() {}
 
     @Before("aiControllerMethods()")
     public void checkAiSwitch(JoinPoint joinPoint) {
         if (!aiConfigService.isAiEnabled()) {
-            log.info("[AI开关] 全局 AI 已关闭，拒绝请求: {}",
+            log.info("[AI Switch] blocked request: {}",
                     joinPoint.getSignature().toShortString());
-            throw new BusinessException(ErrorCode.FORBIDDEN,
+            throw new BusinessException(ErrorCode.FORBIDDEN_ERROR,
                     "AI 功能当前已关闭，请联系管理员开启");
         }
     }
@@ -3570,23 +3570,23 @@ flowchart LR
 ## 九、附录
 ### 9.1 核心接口规范
 
-> SSE 流式接口统一使用 GET 方式，响应头 `Content-Type: text/event-stream`，前端通过 `EventSource` 接收；每个 token 作为一条 `data` 事件推送（JSON 格式 `{"d":"..."}`），结束时推送 `{"done":true}`。
+> SSE 流式接口统一使用 POST 方式（RequestBody 传入参数），响应头 `Content-Type: text/event-stream`，前端通过 `fetch` + `ReadableStream` 或 `@microsoft/fetch-event-source` 库接收（标准 `EventSource` 仅支持 GET，不适用）；每个 token 作为一条 `data` 事件推送（JSON 格式 `{"d":"..."}`），结束时推送 `{"done":true}`。
 
 | 接口地址 | 请求方式 | 响应类型 | 接口描述 |
 |----------|----------|----------|----------|
 | /api/ai/chat | POST | application/json | AI问答对话（阻塞式，完整返回） |
-| /api/ai/chat/stream | GET | text/event-stream | AI问答 SSE 流式接口（逐 token 推送） |
+| /api/ai/chat/stream | POST | text/event-stream | AI问答 SSE 流式接口（逐 token 推送） |
 | /api/ai/chat/history | GET | application/json | 获取用户对话历史 |
 | /api/ai/chat/clear | POST | application/json | 清空用户对话历史 |
 | /api/ai/code/analysis | POST | application/json | 代码AI分析（阻塞式） |
-| /api/ai/code/analysis/stream | GET | text/event-stream | 代码AI分析 SSE 流式接口 |
+| /api/ai/code/analysis/stream | POST | text/event-stream | 代码AI分析 SSE 流式接口 |
 | /api/ai/code/history | GET | application/json | 获取用户代码分析历史 |
 | /api/ai/question/parse | POST | application/json | 获取题目AI解析（阻塞式） |
-| /api/ai/question/parse/stream | GET | text/event-stream | 题目AI解析 SSE 流式接口 |
+| /api/ai/question/parse/stream | POST | text/event-stream | 题目AI解析 SSE 流式接口 |
 | /api/ai/question/similar | GET | application/json | 获取相似题目推荐 |
 | /api/ai/wrong-question/list | GET | application/json | 获取用户错题列表 |
 | /api/ai/wrong-question/analysis | GET | application/json | 获取错题AI分析（阻塞式） |
-| /api/ai/wrong-question/analysis/stream | GET | text/event-stream | 错题AI分析 SSE 流式接口 |
+| /api/ai/wrong-question/analysis/stream | POST | text/event-stream | 错题AI分析 SSE 流式接口 |
 | /api/ai/wrong-question/review | POST | application/json | 标记错题已复习 |
 | /api/admin/ai/config | POST | application/json | 修改AI系统配置 |
 | /api/admin/ai/config | GET | application/json | 获取AI系统配置 |

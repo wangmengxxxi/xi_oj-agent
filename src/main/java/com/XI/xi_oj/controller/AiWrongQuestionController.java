@@ -63,11 +63,11 @@ public class AiWrongQuestionController {
 
     @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_WRONG_USER_DAY},
             message = "AI错题分析调用过于频繁，请稍后再试")
-    @GetMapping(value = "/analysis/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> analyzeWrongQuestionStream(@RequestParam Long wrongQuestionId,
+    @PostMapping(value = "/analysis/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> analyzeWrongQuestionStream(@RequestBody @Valid WrongQuestionReviewRequest wrongRequest,
                                                                     HttpServletRequest request) {
         User loginUser = userService.getLoginUser(request);
-        return aiWrongQuestionService.analyzeWrongQuestionStream(loginUser.getId(), wrongQuestionId)
+        return aiWrongQuestionService.analyzeWrongQuestionStream(loginUser.getId(), wrongRequest.getWrongQuestionId())
                 .map(token -> ServerSentEvent.<String>builder()
                         .data(toJson(singletonPayload("d", token == null ? "" : token)))
                         .build())

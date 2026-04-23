@@ -56,11 +56,11 @@ public class AiQuestionParseController {
 
     @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_QUESTION_USER_DAY},
             message = "AI题目解析调用过于频繁，请稍后再试")
-    @GetMapping(value = "/parse/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> parseQuestionStream(@RequestParam Long questionId,
+    @PostMapping(value = "/parse/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> parseQuestionStream(@RequestBody @Valid AiQuestionParseRequest request,
                                                              HttpServletRequest httpRequest) {
         User loginUser = userService.getLoginUser(httpRequest);
-        return aiQuestionParseService.parseQuestionStream(loginUser.getId(), questionId)
+        return aiQuestionParseService.parseQuestionStream(loginUser.getId(), request.getQuestionId())
                 .map(token -> ServerSentEvent.<String>builder()
                         .data(toJson(singletonPayload("d", token == null ? "" : token)))
                         .build())
