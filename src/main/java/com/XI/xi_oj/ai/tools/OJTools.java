@@ -75,14 +75,14 @@ public class OJTools {
         }
         return String.format("""
                         题目ID：%d
-                        标题：%s
+                        标题：[%s](/view/question/%d)
                         题干：%s
                         标签：%s
                         难度：%s
                         参考答案：%s
                         """,
                 question.getId(),
-                question.getTitle(),
+                question.getTitle(), question.getId(),
                 question.getContent(),
                 question.getTags(),
                 question.getDifficulty(),
@@ -192,8 +192,8 @@ public class OJTools {
         }
         StringBuilder sb = new StringBuilder("共找到 " + page.getTotal() + " 道题目（显示前 " + records.size() + " 道）：\n");
         for (Question q : records) {
-            sb.append(String.format("ID: %d | 标题: %s | 难度: %s | 标签: %s\n",
-                    q.getId(), q.getTitle(), q.getDifficulty(), q.getTags()));
+            sb.append(String.format("- [%s](/view/question/%d) | 难度: %s | 标签: %s\n",
+                    q.getTitle(), q.getId(), q.getDifficulty(), q.getTags()));
         }
         return sb.toString();
     }
@@ -221,8 +221,8 @@ public class OJTools {
         }
         StringBuilder sb = new StringBuilder("找到 " + questions.size() + " 道相似题目：\n");
         for (Question q : questions) {
-            sb.append(String.format("ID: %d | 标题: %s | 难度: %s | 标签: %s\n",
-                    q.getId(), q.getTitle(), q.getDifficulty(), q.getTags()));
+            sb.append(String.format("- [%s](/view/question/%d) | 难度: %s | 标签: %s\n",
+                    q.getTitle(), q.getId(), q.getDifficulty(), q.getTags()));
         }
         return sb.toString();
     }
@@ -244,8 +244,8 @@ public class OJTools {
         }
         StringBuilder sb = new StringBuilder("共有 " + wrongList.size() + " 道错题：\n");
         for (WrongQuestionVO w : wrongList) {
-            sb.append(String.format("题目ID: %d | 判题结果: %s | 复习次数: %d\n",
-                    w.getQuestionId(), w.getWrongJudgeResult(), w.getReviewCount()));
+            sb.append(String.format("- 题目 [#%d](/view/question/%d) | 判题结果: %s | 复习次数: %d\n",
+                    w.getQuestionId(), w.getQuestionId(), w.getWrongJudgeResult(), w.getReviewCount()));
         }
         return sb.toString();
     }
@@ -283,8 +283,8 @@ public class OJTools {
         for (QuestionSubmit s : records) {
             String statusName = (s.getStatus() >= 0 && s.getStatus() < statusNames.length)
                     ? statusNames[s.getStatus()] : String.valueOf(s.getStatus());
-            sb.append(String.format("题目ID: %d | 语言: %s | 状态: %s | 时间: %s\n",
-                    s.getQuestionId(), s.getLanguage(), statusName,
+            sb.append(String.format("- 题目 [#%d](/view/question/%d) | 语言: %s | 状态: %s | 时间: %s\n",
+                    s.getQuestionId(), s.getQuestionId(), s.getLanguage(), statusName,
                     s.getCreateTime() != null ? sdf.format(s.getCreateTime()) : "未知"));
         }
         return sb.toString();

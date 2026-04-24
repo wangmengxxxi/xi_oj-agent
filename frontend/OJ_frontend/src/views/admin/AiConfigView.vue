@@ -18,6 +18,7 @@ const form = reactive({
   'ai.model.embedding_name': '',
   'ai.rag.top_k': '',
   'ai.rag.similarity_threshold': '',
+  'ai.prompt.chat_system': '',
   'ai.prompt.code_analysis': '',
   'ai.prompt.wrong_analysis': '',
   'ai.prompt.question_parse': '',
@@ -179,6 +180,10 @@ onMounted(loadConfig)
         <!-- Prompt 配置 -->
         <div class="config-section">
           <div class="section-title">Prompt 配置</div>
+          <a-form-item label="AI 对话系统 Prompt">
+            <a-textarea v-model="form['ai.prompt.chat_system']" :auto-size="{ minRows: 4, maxRows: 12 }" placeholder="AI 编程助手的系统指令，留空则使用默认 Prompt" />
+            <div class="field-hint">控制 AI 编程助手的行为和回答风格</div>
+          </a-form-item>
           <a-form-item label="代码分析 Prompt">
             <a-textarea v-model="form['ai.prompt.code_analysis']" :auto-size="{ minRows: 3, maxRows: 8 }" />
           </a-form-item>

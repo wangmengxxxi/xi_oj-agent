@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, nextTick, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
 import { getAiChatHistory, clearAiChat, getAiChatSessions } from '@/api/ai'
 import { fetchSSE } from '@/utils/sse'
@@ -12,6 +13,7 @@ interface ChatMessage {
   loading?: boolean
 }
 
+const router = useRouter()
 const chatId = ref('')
 const sessions = reactive<{ id: string; label: string }[]>([])
 const messages = ref<ChatMessage[]>([])
@@ -156,6 +158,17 @@ function switchSession(id: string) {
   loadHistory()
 }
 
+function handleLinkClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  const anchor = target.closest('a')
+  if (!anchor) return
+  const href = anchor.getAttribute('href')
+  if (href && href.startsWith('/')) {
+    e.preventDefault()
+    router.push(href)
+  }
+}
+
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -194,7 +207,7 @@ onUnmounted(() => { if (sseController) sseController.abort() })
         <a-button size="small" @click="handleClear">清空对话</a-button>
       </div>
 
-      <div ref="chatAreaRef" class="chat-area">
+      <div ref="chatAreaRef" class="chat-area" @click="handleLinkClick">
         <a-spin :loading="historyLoading" style="width: 100%">
           <div v-if="messages.length === 0 && !historyLoading" class="empty-hint">
             发送消息开始对话

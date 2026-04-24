@@ -6,8 +6,8 @@ import com.XI.xi_oj.service.AiConfigService;
 import dev.langchain4j.community.model.dashscope.QwenChatModel;
 import dev.langchain4j.community.model.dashscope.QwenEmbeddingModel;
 import dev.langchain4j.community.model.dashscope.QwenStreamingChatModel;
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.chat.StreamingChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -56,8 +56,8 @@ public class AiModelHolder {
 
 
     // 可变类型的AI模型和代理
-    private volatile ChatLanguageModel chatModel;              // 聊天语言模型
-    private volatile StreamingChatLanguageModel streamingChatModel;  // 流式聊天语言模型
+    private volatile ChatModel chatModel;
+    private volatile StreamingChatModel streamingChatModel;
     private volatile EmbeddingModel embeddingModel;            // 嵌入模型
     private volatile OJChatAgent ojChatAgent;                  // OJ聊天代理
     private volatile OJQuestionParseAgent ojQuestionParseAgent;  // OJ问题解析代理
@@ -134,7 +134,7 @@ public class AiModelHolder {
      * 获取聊天语言模型
      * @return ChatLanguageModel 聊天语言模型实例
      */
-    public ChatLanguageModel getChatModel() {
+    public ChatModel getChatModel() {
         return chatModel;
     }
 
@@ -142,7 +142,7 @@ public class AiModelHolder {
      * 获取流式聊天语言模型
      * @return StreamingChatLanguageModel 流式聊天语言模型实例
      */
-    public StreamingChatLanguageModel getStreamingChatModel() {
+    public StreamingChatModel getStreamingChatModel() {
         return streamingChatModel;
     }
 
@@ -184,7 +184,7 @@ public class AiModelHolder {
      * 构建聊天语言模型
      * @return ChatLanguageModel 构建好的聊天语言模型
      */
-    private ChatLanguageModel buildChatModel() {
+    private ChatModel buildChatModel() {
         String modelName = aiConfigService.getConfigValue("ai.model.name");
         return QwenChatModel.builder()
                 .apiKey(apiKey)
@@ -198,7 +198,7 @@ public class AiModelHolder {
      * 构建流式聊天语言模型
      * @return StreamingChatLanguageModel 构建好的流式聊天语言模型
      */
-    private StreamingChatLanguageModel buildStreamingChatModel() {
+    private StreamingChatModel buildStreamingChatModel() {
         String modelName = aiConfigService.getConfigValue("ai.model.name");
         return QwenStreamingChatModel.builder()
                 .apiKey(apiKey)
@@ -225,7 +225,7 @@ public class AiModelHolder {
      * @param model 流式聊天语言模型
      * @return OJStreamingService 构建好的流式服务
      */
-    private OJStreamingService buildStreamingService(StreamingChatLanguageModel model) {
+    private OJStreamingService buildStreamingService(StreamingChatModel model) {
         return fullPrompt -> Flux.create(sink -> model.chat(
                 fullPrompt,
                 new StreamingChatResponseHandler() {
@@ -257,6 +257,11 @@ public class AiModelHolder {
             2. 分析代码或错题时，先指出错误、再给出改进思路，不直接提供完整可运行的标准答案；
             3. 解题讲解需分步骤，适配新手学习节奏，结合RAG提供的知识点进行说明；
             4. 回答语言为中文，格式清晰，重点突出。
+            【回答风格】
+            - 简洁直接，不要输出工具调用的中间过程或思考过程（如"让我先查一下""没查到，换个方式试试"）；
+            - 工具返回无结果时，直接告知用户结果即可，不要描述你接下来要做什么；
+            - 工具返回的markdown链接（如 [标题](/view/question/123)）必须原样保留在回答中，不要去掉链接格式；
+            - 展示题目列表时使用工具返回的链接格式，方便用户直接点击跳转。
             【可用工具】你可以调用以下工具获取信息或执行操作：
             - query_question_info：按ID或关键词查询单道题目的详细信息
             - search_questions：按关键词、标签、难度搜索题目列表（如"查找动态规划相关题目"）
@@ -265,8 +270,9 @@ public class AiModelHolder {
             - query_user_wrong_question：按题目ID查询用户的错题记录
             - list_user_wrong_questions：列出用户的所有错题
             - query_user_submit_history：查询用户的代码提交记录
-            【思考规范 - ReAct模式】：收到问题后，先明确：我需要哪些信息？是否需要调用工具？
-            若需调用工具，等工具返回结果后再基于结果决策下一步，不要在工具返回前跳到结论。
+            【工具调用规范】
+            - 收到问题后判断是否需要调用工具，需要则直接调用，不需要向用户解释你要调用什么工具；
+            - 工具返回结果后直接基于结果回答用户，不要描述工具调用过程。
             """;
 
     private static final String DEFAULT_PARSE_SYSTEM_PROMPT = """
@@ -288,8 +294,8 @@ public class AiModelHolder {
                         .collect(java.util.stream.Collectors.joining(", ")));
 
         return AiServices.builder(OJChatAgent.class)
-                .chatLanguageModel(this.chatModel)
-                .streamingChatLanguageModel(this.streamingChatModel)
+                .chatModel(this.chatModel)
+                .streamingChatModel(this.streamingChatModel)
                 .tools(ojTools)
                 .contentRetriever(buildRetriever())
                 .systemMessageProvider(memoryId ->
@@ -297,7 +303,7 @@ public class AiModelHolder {
                 .chatMemoryProvider(memoryId ->
                         dev.langchain4j.memory.chat.MessageWindowChatMemory.builder()
                                 .id(memoryId)
-                                .maxMessages(20)
+                                .maxMessages(50)
                                 .chatMemoryStore(chatMemoryStore)
                                 .build())
                 .build();
@@ -305,8 +311,8 @@ public class AiModelHolder {
 
     private OJQuestionParseAgent buildQuestionParseAgent() {
         return AiServices.builder(OJQuestionParseAgent.class)
-                .chatLanguageModel(this.chatModel)
-                .streamingChatLanguageModel(this.streamingChatModel)
+                .chatModel(this.chatModel)
+                .streamingChatModel(this.streamingChatModel)
                 .contentRetriever(buildRetriever())
                 .systemMessageProvider(memoryId ->
                         aiConfigService.getPrompt("ai.prompt.question_parse", DEFAULT_PARSE_SYSTEM_PROMPT))
