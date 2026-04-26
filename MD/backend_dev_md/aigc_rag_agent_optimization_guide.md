@@ -201,14 +201,20 @@ LangChain4j 的 `AiServices` 帮你封装了这个循环，你只需要声明接
 
 让 LLM 在对话过程中调用外部函数获取信息或执行操作。
 
-你的项目里有 3 个工具：
-- `query_question_info`：查题目信息
+你的项目里有 7 个工具：
+- `query_question_info`：按关键词或 ID 查题目信息
 - `judge_user_code`：提交代码判题
-- `query_user_wrong_question`：查错题记录
+- `query_user_wrong_question`：查某道题的错题记录
+- `search_questions`：按关键词/标签/难度搜索题目列表
+- `find_similar_questions`：基于向量检索查找相似题目
+- `list_user_wrong_questions`：查询用户所有错题列表
+- `query_user_submit_history`：查询用户提交历史
 
 LLM 不是直接执行这些函数，而是输出"我想调用 xxx 工具，参数是 yyy"，然后由你的代码解析这个意图、执行函数、把结果返回给 LLM。
 
 LangChain4j 的 `@Tool` 注解自动完成了这个过程。自定义 Agent Loop 里你需要自己解析 LLM 输出中的工具调用意图。
+
+> 注意：自定义 Agent Loop 只是替换了 LangChain4j 最上层的 AiServices 自动调度，底层的 `ChatModel`（模型调用）、`EmbeddingModel` + `EmbeddingStore`（向量检索）等基础设施仍然使用 LangChain4j。这不是"脱离框架"，而是"在框架基础设施之上自己控制编排逻辑"。
 
 ---
 
@@ -446,7 +452,7 @@ public class QueryRewriter {
 
 #### 2.3.4 AiModelHolder 新增 rewriteModel
 
-在 `AiModelHolder` 中新增 `rewriteModel` 的构建和 getter（因为当前所有 AI 模型实例统一由 `AiModelHolder` 持有和管理，`AiAgentFactory` 仅负责基础设施 Bean）：
+在 `AiModelHolder` 中新增 `rewriteModel` 的构建和 getter。与现有 `chatModel` 一样，模型名称和参数从 `aiConfigService` 动态读取，配置变更时自动重建：
 
 ```java
 // 在 AiModelHolder.java 中新增
@@ -459,11 +465,17 @@ public void init() {
 }
 
 private ChatLanguageModel buildRewriteModel() {
+    String modelName = aiConfigService.getConfigValue("ai.rewrite.model_name", "qwen-turbo");
+    float temperature = Float.parseFloat(
+            aiConfigService.getConfigValue("ai.rewrite.temperature", "0.1"));
+    int maxTokens = Integer.parseInt(
+            aiConfigService.getConfigValue("ai.rewrite.max_tokens", "256"));
+
     return QwenChatModel.builder()
             .apiKey(apiKey)
-            .modelName("qwen-turbo")  // 便宜快速的模型
-            .temperature(0.1f)         // 低温度，输出稳定
-            .maxTokens(256)            // 改写不需要长输出
+            .modelName(modelName)
+            .temperature(temperature)
+            .maxTokens(maxTokens)
             .build();
 }
 
@@ -471,6 +483,28 @@ public ChatLanguageModel getRewriteModel() {
     return rewriteModel;
 }
 ```
+
+同时在 `onConfigChanged()` 的 key 分组中，新增 rewrite 相关 key 的处理：
+
+```java
+// AiModelHolder.onConfigChanged() 中新增
+private static final Set<String> REWRITE_MODEL_KEYS = Set.of(
+        "ai.rewrite.model_name", "ai.rewrite.temperature", "ai.rewrite.max_tokens");
+
+@EventListener
+public void onConfigChanged(AiConfigChangedEvent event) {
+    String key = event.getKey();
+    if (MODEL_NAME_KEYS.contains(key)) {
+        // 全量重建（现有逻辑）
+    } else if (REWRITE_MODEL_KEYS.contains(key)) {
+        this.rewriteModel = buildRewriteModel();
+        log.info("[AiModelHolder] rewriteModel rebuilt due to config change: {}", key);
+    }
+    // ... 其他分支
+}
+```
+
+> 设计说明：`temperature=0.1` 是为了保证改写结果稳定。如果 rewrite 模型输出不稳定（同一 query 每次改写结果不同），会导致下游 RAG 缓存命中率下降。低温度 + Redis 缓存双重保障改写一致性。
 
 #### 2.3.5 OJKnowledgeRetriever 接入 Query Rewrite
 
@@ -530,6 +564,7 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
@@ -547,7 +582,14 @@ public class RerankService {
             "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank";
     private static final String RERANK_MODEL = "gte-rerank";
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
+
+    public RerankService() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(5_000);   // 连接超时 5s
+        factory.setReadTimeout(10_000);     // 读取超时 10s
+        this.restTemplate = new RestTemplate(factory);
+    }
 
     /**
      * 对候选文档列表做精排，返回按相关性降序排列的文档。
@@ -945,6 +987,21 @@ public class ToolDispatcher {
                     ojTools.queryUserWrongQuestion(
                             toLong(params.get("userId")),
                             toLong(params.get("questionId")));
+            case "search_questions" ->
+                    ojTools.searchQuestions(
+                            (String) params.get("keyword"),
+                            (String) params.get("tags"),
+                            (String) params.get("difficulty"));
+            case "find_similar_questions" ->
+                    ojTools.findSimilarQuestions(
+                            toLong(params.get("questionId")));
+            case "list_user_wrong_questions" ->
+                    ojTools.listUserWrongQuestions(
+                            toLong(params.get("userId")));
+            case "query_user_submit_history" ->
+                    ojTools.queryUserSubmitHistory(
+                            toLong(params.get("userId")),
+                            toLong(params.get("questionId")));
             default -> throw new IllegalArgumentException("未知工具: " + toolName);
         };
     }
@@ -978,7 +1035,9 @@ package com.XI.xi_oj.ai.agent;
 
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import dev.langchain4j.data.message.*;
 import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -996,9 +1055,13 @@ public class AgentLoopService {
     private static final String SYSTEM_PROMPT = """
             你是 XI OJ 平台的智能编程助教。你可以使用以下工具：
 
-            1. query_question_info(keyword) - 查询题目信息
-            2. judge_user_code(questionId, code, language, userId) - 判题
-            3. query_user_wrong_question(userId, questionId) - 查询错题记录
+            1. query_question_info(keyword) - 按关键词或 ID 查询题目信息
+            2. judge_user_code(questionId, code, language, userId) - 提交代码判题
+            3. query_user_wrong_question(userId, questionId) - 查询某道题的错题记录
+            4. search_questions(keyword, tags, difficulty) - 按关键词/标签/难度搜索题目列表
+            5. find_similar_questions(questionId) - 基于向量检索查找相似题目
+            6. list_user_wrong_questions(userId) - 查询用户所有错题列表
+            7. query_user_submit_history(userId, questionId) - 查询用户提交历史
 
             每次回复必须严格使用以下格式之一：
 
@@ -1026,20 +1089,24 @@ public class AgentLoopService {
 
     /**
      * 执行自定义 Agent 推理循环。
-     * 返回最终回答和完整的推理步骤链路。
+     * 使用 LangChain4j 的 ChatMessage 列表维护对话历史，确保 SystemMessage 角色信息正确传递。
      */
     public AgentResult run(String userQuery, Long userId) {
         List<AgentStep> steps = new ArrayList<>();
-        StringBuilder conversationHistory = new StringBuilder();
-        conversationHistory.append(SYSTEM_PROMPT).append("\n\n");
-        conversationHistory.append("User: ").append(userQuery).append("\n\n");
+        // 使用 ChatMessage 列表而非字符串拼接，保证消息角色（system/user/ai）正确传递给模型
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(SystemMessage.from(SYSTEM_PROMPT));
+        messages.add(UserMessage.from(userQuery));
+
+        ChatLanguageModel chatModel = aiModelHolder.getChatModel();
 
         for (int i = 0; i < MAX_STEPS; i++) {
             long stepStart = System.currentTimeMillis();
 
-            // 1. 调用 LLM
-            String llmOutput = aiModelHolder.getChatModel().chat(conversationHistory.toString());
-            conversationHistory.append("Assistant: ").append(llmOutput).append("\n\n");
+            // 1. 调用 LLM（传入完整的 ChatMessage 列表）
+            ChatResponse response = chatModel.chat(messages);
+            String llmOutput = response.aiMessage().text();
+            messages.add(AiMessage.from(llmOutput));
 
             // 2. 解析输出
             String thought = extractBlock(llmOutput, "Thought:");
@@ -1074,27 +1141,26 @@ public class AgentLoopService {
                         .durationMs(System.currentTimeMillis() - stepStart)
                         .build());
 
-                // 5. 将工具结果追加到对话历史
-                conversationHistory.append("Observation: ")
-                        .append(toolResult.output()).append("\n\n");
+                // 5. 将工具结果作为 UserMessage 追加（模拟 Observation 角色）
+                messages.add(UserMessage.from("Observation: " + toolResult.output()));
             } else {
-                // LLM 输出格式异常，记录并继续
+                // LLM 输出格式异常，记录并提示重试
                 steps.add(AgentStep.builder()
                         .stepIndex(i + 1)
                         .thought("格式解析失败: " + llmOutput)
                         .durationMs(System.currentTimeMillis() - stepStart)
                         .build());
-                conversationHistory.append(
-                        "System: 请严格按照格式回复，使用 Thought/Action/Answer。\n\n");
+                messages.add(UserMessage.from(
+                        "请严格按照格式回复，使用 Thought/Action/Answer。"));
             }
         }
 
         // 超过最大步数，强制要求总结
-        String forceAnswer = aiModelHolder.getChatModel().chat(
-                conversationHistory + "System: 已达到最大推理步数，请基于已有信息给出最终回答。\n\n");
-        return AgentResult.of(extractBlock(forceAnswer, "Answer:") != null
-                        ? extractBlock(forceAnswer, "Answer:") : forceAnswer,
-                steps);
+        messages.add(UserMessage.from("已达到最大推理步数，请基于已有信息给出最终回答。"));
+        ChatResponse forceResponse = chatModel.chat(messages);
+        String forceOutput = forceResponse.aiMessage().text();
+        String forceAnswer = extractBlock(forceOutput, "Answer:");
+        return AgentResult.of(forceAnswer != null ? forceAnswer : forceOutput, steps);
     }
 
     private String extractBlock(String text, String prefix) {
@@ -1137,6 +1203,8 @@ public class AgentLoopService {
 ### 3.4 Agent 可观测性 — 决策链路日志
 
 #### 3.4.1 日志表结构
+
+> 完整的可执行 SQL 见第四章「所需 SQL 语句汇总」。
 
 ```sql
 CREATE TABLE ai_agent_trace_log (
@@ -1215,8 +1283,10 @@ flowchart TD
 ```
 
 通过 `ai_config` 表的 `ai.agent.mode` 配置项切换：
-- `simple`：使用现有 `OJChatAgent`（AiServices 自动调度），稳定兜底。
-- `advanced`：使用 `AgentLoopService`（自定义循环），功能更强。
+- `simple`：使用现有 `OJChatAgent`（AiServices 自动调度），支持流式输出，稳定兜底。
+- `advanced`：使用 `AgentLoopService`（自定义循环），功能更强，但当前版本为同步返回，不支持流式输出。
+
+> **Streaming 限制说明**：现有 `OJStreamingService` 和 `chatStream` 基于 AiServices 的流式能力实现。`AgentLoopService` 当前是同步的 `run()` 方法，不支持 streaming。如果需要在 advanced 模式下支持流式，需要后续将 Agent Loop 改造为基于 `StreamingChatModel` 的异步实现，逐步将每一步的 Thought 和最终 Answer 流式推送给前端。这是一个已知的功能差异，灰度切换时需要注意。
 
 这样可以灰度切换，不影响线上稳定性。
 
@@ -1236,23 +1306,87 @@ flowchart TD
 
 ---
 
-## 四、两个方向的面试话术
+## 四、所需 SQL 语句汇总
 
-### 4.1 RAG 优化怎么讲
+本章汇总两个方向所有需要执行的 SQL，按实施顺序排列。
 
-> "我们的 RAG 做了三层优化。第一层 Query Rewrite，用轻量模型把用户口语化的短 query 改写成信息更丰富的检索 query，比如'二分怎么写'改写成'二分查找算法实现思路与边界处理'，改写结果缓存到 Redis 避免重复调用。第二层 Cross-Encoder Rerank，向量检索先粗排取 Top10，再用 DashScope 的 gte-rerank 模型精排取 Top3，过滤掉语义相似但实际不相关的结果。第三层是离线评估，我用现有题目标签构造了评估集，跑 Recall@5 和 MRR 指标，Query Rewrite 让 Recall@5 从 0.6x 提升到 0.7x，加上 Rerank 进一步提升到 0.8x。"
+### 4.1 方向 B：ai_config 新增 Query Rewrite 和 Rerank 配置项
 
-### 4.2 自定义 Agent Loop 怎么讲
+```sql
+-- Query Rewrite 相关配置
+INSERT INTO ai_config (config_key, config_value, description, is_enable) VALUES
+('ai.rewrite.model_name', 'qwen-turbo', 'Query Rewrite 使用的模型名称（轻量模型，用于改写用户口语化 query）', 1),
+('ai.rewrite.temperature', '0.1', 'Query Rewrite 模型温度（低温度保证改写结果稳定，避免缓存命中率下降）', 1),
+('ai.rewrite.max_tokens', '256', 'Query Rewrite 最大输出 token 数（改写只需一句话，不需要长输出）', 1);
 
-> "我没有直接用 LangChain4j 的 AiServices 自动调度，而是自己写了 ReAct 推理循环。每一步 LLM 输出 Thought + Action，我解析后通过 ToolDispatcher 执行工具，工具失败会退避重试最多 2 次，超过最大步数会强制要求模型基于已有信息总结回答。整个推理链路每一步都记录到数据库——思考了什么、选了哪个工具、输入输出是什么、耗时多少——方便线上排查 Agent 行为异常。两套方案通过配置中心切换，可以灰度上线。"
+-- Rerank 相关配置（预留，当前 RerankService 使用固定值，后续可改为动态读取）
+INSERT INTO ai_config (config_key, config_value, description, is_enable) VALUES
+('ai.rerank.enabled', 'true', '是否启用 Cross-Encoder Rerank 精排', 1),
+('ai.rerank.model_name', 'gte-rerank', 'Rerank 模型名称（DashScope 提供）', 1),
+('ai.rerank.top_n', '3', 'Rerank 精排后取前 N 个结果', 1);
+```
+
+### 4.2 方向 A：Agent 推理链路日志表
+
+```sql
+CREATE TABLE ai_agent_trace_log (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id     BIGINT       NOT NULL,
+    chat_id     VARCHAR(64)  NOT NULL,
+    query       TEXT         NOT NULL,
+    step_index  INT          NOT NULL,
+    thought     TEXT,
+    tool_name   VARCHAR(64),
+    tool_input  TEXT,
+    tool_output TEXT,
+    tool_success TINYINT     DEFAULT 1,
+    retry_count INT          DEFAULT 0,
+    duration_ms BIGINT       DEFAULT 0,
+    create_time DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_user_chat (user_id, chat_id)
+) COMMENT 'Agent 推理链路追踪日志';
+```
+
+### 4.3 方向 A：ai_config 新增 Agent 模式切换配置
+
+```sql
+INSERT INTO ai_config (config_key, config_value, description, is_enable) VALUES
+('ai.agent.mode', 'simple', 'Agent 推理模式：simple=LangChain4j AiServices 自动调度，advanced=自定义 ReAct 推理循环', 1),
+('ai.agent.max_steps', '6', 'Agent 推理循环最大步数（超过后强制总结回答）', 1),
+('ai.agent.tool_max_retry', '2', '工具调用最大重试次数', 1);
+```
+
+### 4.4 执行顺序建议
+
+| 顺序 | SQL | 时机 |
+|---|---|---|
+| 1 | 4.1 Query Rewrite + Rerank 配置 | 方向 B 开发前 |
+| 2 | 4.2 ai_agent_trace_log 建表 | 方向 A 开发前 |
+| 3 | 4.3 Agent 模式配置 | 方向 A 开发前 |
 
 ---
 
-## 五、总结
+## 五、两个方向的面试话术
+
+### 5.1 RAG 优化怎么讲
+
+> "我们的 RAG 做了三层优化。第一层 Query Rewrite，用轻量模型把用户口语化的短 query 改写成信息更丰富的检索 query，比如'二分怎么写'改写成'二分查找算法实现思路与边界处理'，改写模型的名称和参数都走动态配置，可以在后台热切换，改写结果缓存到 Redis 避免重复调用。第二层 Cross-Encoder Rerank，向量检索先粗排取 Top10，再用 DashScope 的 gte-rerank 模型精排取 Top3，过滤掉语义相似但实际不相关的结果。第三层是离线评估，我用现有题目标签构造了评估集，跑 Recall@5 和 MRR 指标，Query Rewrite 让 Recall@5 从 0.6x 提升到 0.7x，加上 Rerank 进一步提升到 0.8x。"
+
+### 5.2 自定义 Agent Loop 怎么讲
+
+> "我用 LangChain4j 做模型调用和 RAG 检索的基础设施，但 Agent 的推理循环是自己实现的，没有用 AiServices 的自动调度。底层能力复用框架（ChatModel、EmbeddingStore），上层控制逻辑自己掌握。每一步 LLM 输出 Thought + Action，我解析后通过 ToolDispatcher 执行工具（覆盖全部 7 个工具），工具失败会退避重试最多 2 次，超过最大步数会强制要求模型基于已有信息总结回答。对话历史用 LangChain4j 的 ChatMessage 列表维护，保证 system/user/ai 角色信息正确传递。整个推理链路每一步都记录到数据库——思考了什么、选了哪个工具、输入输出是什么、耗时多少——方便线上排查 Agent 行为异常。两套方案通过配置中心切换，可以灰度上线。"
+
+### 5.3 被追问"为什么不完全脱离 LangChain4j"时怎么答
+
+> "LangChain4j 的价值分层次：底层的模型抽象（ChatModel 接口统一了不同厂商的 API 差异）、向量存储适配（EmbeddingStore 屏蔽了 Milvus 的连接细节）这些是纯基础设施，自己写没有额外收益。但最上层的 AiServices 自动调度是黑盒——工具失败没有重试、没有步数限制、没有决策日志，这些在生产环境是必须的。所以我的做法是：基础设施用框架，编排逻辑自己写，该复用的复用，该掌控的掌控。"
+
+---
+
+## 六、总结
 
 | 方向 | 核心价值 | 新增文件 | 改动已有文件 | 面试加分点 |
 |---|---|---|---|---|
-| B：RAG 深度优化 | 检索质量可量化提升 | 3 个 | 2 个 | 有数据说话（Recall@K） |
-| A：自定义 Agent Loop | 证明理解 Agent 本质 | 5 个 | 2 个 | 可观测性 + 容错 + 灰度 |
+| B：RAG 深度优化 | 检索质量可量化提升 | 3 个 | 2 个 | 有数据说话（Recall@K）+ 动态配置 |
+| A：自定义 Agent Loop | 证明理解 Agent 本质和框架分层 | 5 个 | 2 个 | 可观测性 + 容错 + 灰度 + ChatMessage 规范用法 |
 
 建议先完成 B（1~2 天），再完成 A（2~3 天），总计一周内可以落地。
