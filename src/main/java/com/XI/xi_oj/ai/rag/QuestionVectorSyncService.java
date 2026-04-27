@@ -79,12 +79,34 @@ public class QuestionVectorSyncService {
      * @return 格式化后的文本内容
      */
     private String buildVectorText(Question question) {
-        return String.format("题目ID：%d\n题目标题：%s\n题目链接：/view/question/%d\n题干：%s\n考点标签：%s",
+        String thinking = extractThinkingText(question.getAnswer());
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("题目ID：%d\n题目标题：%s\n题目链接：/view/question/%d\n题干：%s\n考点标签：%s",
                 question.getId(),
                 safe(question.getTitle()),
                 question.getId(),
                 safe(question.getContent()),
-                safe(question.getTags()));
+                safe(question.getTags())));
+        if (!thinking.isEmpty()) {
+            sb.append("\n解题思路：").append(thinking);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 从 answer 字段提取纯文字思路，剥掉代码块
+     * answer 格式：## 参考答案 + ```代码``` + ## 思路分析 + 文字说明
+     */
+    private String extractThinkingText(String answer) {
+        if (answer == null || answer.isBlank()) return "";
+        String text = answer.replaceAll("```[\\s\\S]*?```", "");
+        int idx = text.indexOf("## 思路分析");
+        if (idx >= 0) {
+            text = text.substring(idx + "## 思路分析".length());
+        }
+        text = text.replaceAll("##.*", "").trim();
+        if (text.length() > 500) text = text.substring(0, 500);
+        return text;
     }
 
     /**

@@ -32,7 +32,17 @@ public class KnowledgeInitializer implements CommandLineRunner {
 
     private static final String[] KNOWLEDGE_FILES = {
             "knowledge/algorithm_knowledge.md",
-            "knowledge/error_analysis.md"
+            "knowledge/error_analysis.md",
+            "knowledge/common_mistakes.md",
+            "knowledge/problem_patterns.md",
+            "knowledge/java_common_pitfalls.md",
+            "knowledge/algorithm_advanced.md",
+            "knowledge/data_structures.md",
+            "knowledge/problem_patterns_extended.md",
+            "knowledge/error_analysis_extended.md",
+            "knowledge/cpp_common_pitfalls.md",
+            "knowledge/python_common_pitfalls.md",
+            "knowledge/oj_practical_tips.md"
     };
 
     @Resource
