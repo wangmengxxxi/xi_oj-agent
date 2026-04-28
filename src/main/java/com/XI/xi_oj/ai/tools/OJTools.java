@@ -1,6 +1,7 @@
 package com.XI.xi_oj.ai.tools;
 
 import com.XI.xi_oj.ai.rag.OJKnowledgeRetriever;
+import com.XI.xi_oj.model.dto.judge.CustomTestResultDTO;
 import com.XI.xi_oj.model.dto.judge.JudgeResultDTO;
 import com.XI.xi_oj.model.dto.question.QuestionQueryRequest;
 import com.XI.xi_oj.model.dto.question.WrongQuestionVO;
@@ -8,6 +9,7 @@ import com.XI.xi_oj.model.dto.questionsubmit.QuestionSubmitQueryRequest;
 import com.XI.xi_oj.model.entity.Question;
 import com.XI.xi_oj.model.entity.QuestionSubmit;
 import com.XI.xi_oj.model.vo.QuestionVO;
+import com.XI.xi_oj.mapper.QuestionSubmitMapper;
 import com.XI.xi_oj.service.*;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -20,6 +22,7 @@ import org.springframework.stereotype.Component;
 import java.text.SimpleDateFormat;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -54,6 +57,9 @@ public class OJTools {
 
     @Autowired
     private QuestionSubmitService questionSubmitService;
+
+    @Autowired
+    private QuestionSubmitMapper questionSubmitMapper;
 
     @Autowired
     @Lazy
@@ -287,6 +293,187 @@ public class OJTools {
                     s.getQuestionId(), s.getQuestionId(), s.getLanguage(), statusName,
                     s.getCreateTime() != null ? sdf.format(s.getCreateTime()) : "未知"));
         }
+        return sb.toString();
+    }
+
+    @Tool(
+            name = "query_user_mastery",
+            value = "分析当前用户各知识点的掌握情况，按标签维度统计AC率和错题数，薄弱知识点排在前面。userId从上下文信息中获取。"
+    )
+    public String queryUserMastery(
+            @P("用户ID，从上下文信息中获取，Long类型") Long userId
+    ) {
+        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        if (resolvedUserId == null) {
+            return "无法获取当前用户信息，请重新登录。";
+        }
+        List<Map<String, Object>> mastery = questionSubmitMapper.selectTagMastery(resolvedUserId);
+        if (mastery == null || mastery.isEmpty()) {
+            return "暂无提交记录，无法分析知识点掌握情况。";
+        }
+        StringBuilder sb = new StringBuilder("用户知识点掌握分析（按薄弱程度排序）：\n");
+        for (Map<String, Object> row : mastery) {
+            sb.append(String.format("- %s | 提交: %s次 | AC: %s次 | 失败: %s次 | AC率: %s%%\n",
+                    row.get("tag"), row.get("totalSubmit"), row.get("acCount"),
+                    row.get("failCount"), row.get("acRate")));
+        }
+        return sb.toString();
+    }
+
+    @Tool(
+            name = "get_question_hints",
+            value = "获取题目的分层提示，引导用户独立思考。hintLevel=1给考点提示，=2给解题方向，=3给伪代码框架。逐步递进，不直接给答案。"
+    )
+    public String getQuestionHints(
+            @P("题目ID，Long类型") Long questionId,
+            @P("提示级别：1=考点提示，2=解题方向，3=伪代码框架") int hintLevel
+    ) {
+        Question question = questionService.getById(questionId);
+        if (question == null || Integer.valueOf(1).equals(question.getIsDelete())) {
+            return "题目不存在，请检查题目ID。";
+        }
+        StringBuilder sb = new StringBuilder();
+        if (hintLevel >= 1) {
+            sb.append("【考点提示】\n");
+            sb.append("本题涉及的知识点标签：").append(question.getTags()).append("\n");
+            sb.append("难度：").append(question.getDifficulty()).append("\n");
+            String content = question.getTitle() + "\n" + question.getContent() + "\n" + question.getTags();
+            List<Long> similarIds = ojKnowledgeRetriever.retrieveSimilarQuestions(questionId, content, question.getDifficulty());
+            if (similarIds != null && !similarIds.isEmpty()) {
+                List<Question> similar = questionService.listByIds(similarIds);
+                if (similar != null && !similar.isEmpty()) {
+                    sb.append("类似题目（可参考思路）：\n");
+                    for (Question q : similar) {
+                        sb.append(String.format("  - [%s](/view/question/%d) | 难度: %s\n", q.getTitle(), q.getId(), q.getDifficulty()));
+                    }
+                }
+            }
+        }
+        if (hintLevel >= 2) {
+            sb.append("\n【解题方向】\n");
+            String answer = question.getAnswer();
+            if (answer != null && !answer.isBlank()) {
+                String lowerAnswer = answer.toLowerCase();
+                if (lowerAnswer.contains("dp") || lowerAnswer.contains("动态规划") || lowerAnswer.contains("memo")) {
+                    sb.append("- 建议使用动态规划思路，考虑状态定义和转移方程\n");
+                } else if (lowerAnswer.contains("bfs") || lowerAnswer.contains("dfs") || lowerAnswer.contains("搜索")) {
+                    sb.append("- 建议使用搜索算法（BFS/DFS），注意剪枝优化\n");
+                } else if (lowerAnswer.contains("sort") || lowerAnswer.contains("排序") || lowerAnswer.contains("贪心")) {
+                    sb.append("- 建议考虑排序或贪心策略\n");
+                } else if (lowerAnswer.contains("二分") || lowerAnswer.contains("binary")) {
+                    sb.append("- 建议使用二分查找思路\n");
+                } else {
+                    sb.append("- 仔细分析题目约束条件，选择合适的数据结构\n");
+                }
+            } else {
+                sb.append("- 根据标签提示选择对应的算法策略\n");
+            }
+        }
+        if (hintLevel >= 3) {
+            sb.append("\n【伪代码框架】\n");
+            sb.append("请先自行尝试编写，以下是通用框架提示：\n");
+            sb.append("1. 读取输入并解析\n");
+            sb.append("2. 初始化数据结构\n");
+            sb.append("3. 核心算法处理\n");
+            sb.append("4. 输出结果\n");
+            sb.append("\n【边界条件提醒】\n");
+            sb.append("- 注意空输入、单元素、最大值边界\n");
+            sb.append("- 注意整数溢出（考虑使用long）\n");
+            sb.append("- 注意时间复杂度是否满足题目限制\n");
+        }
+        return sb.toString();
+    }
+
+    @Tool(
+            name = "run_custom_test",
+            value = "用自定义输入测试用户代码，同时执行标准答案对比输出。用于验证特定边界情况或寻找反例。"
+    )
+    public String runCustomTest(
+            @P("题目ID，Long类型") Long questionId,
+            @P("用户提交的代码内容") String code,
+            @P("代码语言，例如 java / python / cpp") String language,
+            @P("自定义测试输入") String customInput
+    ) {
+        try {
+            CustomTestResultDTO result = judgeService.runCustomTest(questionId, code, language, customInput);
+            if (result.getErrorMsg() != null && result.getUserOutput() == null) {
+                return "测试执行失败：" + result.getErrorMsg();
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append("自定义测试结果：\n");
+            sb.append("输入：").append(customInput).append("\n");
+            sb.append("用户代码输出：").append(result.getUserOutput() != null ? result.getUserOutput() : "（无输出）").append("\n");
+            sb.append("标准答案输出：").append(result.getExpectedOutput() != null ? result.getExpectedOutput() : "（无法获取）").append("\n");
+            sb.append("结果：").append(result.isMatch() ? "一致 ✓" : "不一致 ✗").append("\n");
+            if (!result.isMatch() && result.getErrorMsg() != null) {
+                sb.append("说明：").append(result.getErrorMsg()).append("\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "自定义测试执行异常：" + e.getMessage();
+        }
+    }
+
+    @Tool(
+            name = "diagnose_error_pattern",
+            value = "分析当前用户的错题模式，按错误类型和知识点维度统计，识别系统性薄弱环节。userId从上下文信息中获取。"
+    )
+    public String diagnoseErrorPattern(
+            @P("用户ID，从上下文信息中获取，Long类型") Long userId
+    ) {
+        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        if (resolvedUserId == null) {
+            return "无法获取当前用户信息，请重新登录。";
+        }
+        List<WrongQuestionVO> wrongList = aiWrongQuestionService.listMyWrongQuestions(resolvedUserId);
+        if (wrongList == null || wrongList.isEmpty()) {
+            return "暂无错题记录，无法进行错误模式诊断。";
+        }
+
+        Map<String, Long> errorTypeCount = wrongList.stream()
+                .filter(w -> {
+                    String raw = w.getWrongJudgeResult();
+                    return raw != null && !raw.isBlank() && !raw.equalsIgnoreCase("Accepted");
+                })
+                .collect(Collectors.groupingBy(
+                        w -> w.getWrongJudgeResult().trim(),
+                        Collectors.counting()));
+
+        long totalWrong = errorTypeCount.values().stream().mapToLong(Long::longValue).sum();
+        if (totalWrong == 0) {
+            return "暂无失败的错题记录，无法进行错误模式诊断。";
+        }
+
+        StringBuilder sb = new StringBuilder("错误模式诊断报告：\n\n");
+        sb.append("【错误类型分布】共 ").append(totalWrong).append(" 道错题\n");
+        errorTypeCount.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .forEach(e -> sb.append(String.format("- %s: %d道\n", e.getKey(), e.getValue())));
+
+        sb.append("\n【错题知识点分布】\n");
+        Map<String, Long> tagCount = new java.util.HashMap<>();
+        for (WrongQuestionVO w : wrongList) {
+            Question q = questionService.getById(w.getQuestionId());
+            if (q != null && q.getTags() != null) {
+                try {
+                    List<String> tags = cn.hutool.json.JSONUtil.toList(q.getTags(), String.class);
+                    for (String tag : tags) {
+                        tagCount.merge(tag, 1L, Long::sum);
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        tagCount.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .forEach(e -> sb.append(String.format("- %s: %d道错题\n", e.getKey(), e.getValue())));
+
+        String ragContext = ojKnowledgeRetriever.retrieveByType(
+                "常见编程错误模式 " + String.join(" ", errorTypeCount.keySet()),
+                "错题分析", 3, 0.7);
+        if (ragContext != null && !ragContext.equals("无相关知识点")) {
+            sb.append("\n【相关知识库参考】\n").append(ragContext).append("\n");
+        }
+
         return sb.toString();
     }
 }

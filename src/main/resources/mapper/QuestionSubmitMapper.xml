@@ -23,4 +23,38 @@
         userId,createTime,updateTime,
         isDelete
     </sql>
+
+    <select id="selectTagMastery" resultType="java.util.Map">
+        SELECT
+            t.tag,
+            COUNT(*) AS totalSubmit,
+            SUM(CASE WHEN qs.status = 2 THEN 1 ELSE 0 END) AS acCount,
+            SUM(CASE WHEN qs.status = 3 THEN 1 ELSE 0 END) AS failCount,
+            ROUND(SUM(CASE WHEN qs.status = 2 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS acRate
+        FROM question_submit qs
+        JOIN question q ON qs.questionId = q.id
+        JOIN JSON_TABLE(q.tags, '$[*]' COLUMNS(tag VARCHAR(64) PATH '$')) t
+        WHERE qs.userId = #{userId}
+          AND qs.isDelete = 0
+          AND qs.status IN (2, 3)
+        GROUP BY t.tag
+        ORDER BY acRate ASC
+    </select>
+
+    <select id="selectFailedSubmitStats" resultType="java.util.Map">
+        SELECT
+            qs.questionId,
+            q.title AS questionTitle,
+            q.tags AS questionTags,
+            qs.judgeInfo,
+            qs.language,
+            qs.createTime
+        FROM question_submit qs
+        JOIN question q ON qs.questionId = q.id
+        WHERE qs.userId = #{userId}
+          AND qs.status = 3
+          AND qs.isDelete = 0
+        ORDER BY qs.createTime DESC
+        LIMIT 100
+    </select>
 </mapper>

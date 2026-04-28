@@ -89,9 +89,53 @@ public class RateLimitRedisUtil {
                     "else " +
                     "  return 0 " +
                     "end";
+
+    /**
+     * 令牌桶限流 Lua 脚本
+     * 用 Hash 存储 tokens（当前令牌数）和 lastRefill（上次补充时间戳毫秒）。
+     * 每次请求时根据时间差补充令牌，再尝试消费 1 个令牌。
+     *
+     * KEYS[1] = redis key
+     * ARGV[1] = 桶容量（最大令牌数）
+     * ARGV[2] = 每个令牌的补充间隔（秒）
+     * ARGV[3] = 当前时间戳（毫秒）
+     * ARGV[4] = key 的 TTL（秒）
+     */
+    private static final String TOKEN_BUCKET_SCRIPT =
+            "local key = KEYS[1] " +
+                    "local capacity = tonumber(ARGV[1]) " +
+                    "local refillInterval = tonumber(ARGV[2]) * 1000 " +
+                    "local now = tonumber(ARGV[3]) " +
+                    "local ttl = tonumber(ARGV[4]) " +
+                    "local data = redis.call('HMGET', key, 'tokens', 'lastRefill') " +
+                    "local tokens = tonumber(data[1]) " +
+                    "local lastRefill = tonumber(data[2]) " +
+                    "if tokens == nil then " +
+                    "  tokens = capacity " +
+                    "  lastRefill = now " +
+                    "end " +
+                    "local elapsed = now - lastRefill " +
+                    "if elapsed > 0 then " +
+                    "  local refillCount = math.floor(elapsed / refillInterval) " +
+                    "  if refillCount > 0 then " +
+                    "    tokens = math.min(capacity, tokens + refillCount) " +
+                    "    lastRefill = lastRefill + refillCount * refillInterval " +
+                    "  end " +
+                    "end " +
+                    "if tokens >= 1 then " +
+                    "  tokens = tokens - 1 " +
+                    "  redis.call('HMSET', key, 'tokens', tokens, 'lastRefill', lastRefill) " +
+                    "  redis.call('EXPIRE', key, ttl) " +
+                    "  return 1 " +
+                    "else " +
+                    "  redis.call('HMSET', key, 'tokens', tokens, 'lastRefill', lastRefill) " +
+                    "  redis.call('EXPIRE', key, ttl) " +
+                    "  return 0 " +
+                    "end";
     private static final DefaultRedisScript<Long> SLIDING_WINDOW_REDIS_SCRIPT;
     private static final DefaultRedisScript<Long> COOLDOWN_REDIS_SCRIPT;
     private static final DefaultRedisScript<Long> DAILY_COUNT_REDIS_SCRIPT;
+    private static final DefaultRedisScript<Long> TOKEN_BUCKET_REDIS_SCRIPT;
     static {
         SLIDING_WINDOW_REDIS_SCRIPT = new DefaultRedisScript<>();
         SLIDING_WINDOW_REDIS_SCRIPT.setScriptText(SLIDING_WINDOW_SCRIPT);
@@ -102,6 +146,9 @@ public class RateLimitRedisUtil {
         DAILY_COUNT_REDIS_SCRIPT = new DefaultRedisScript<>();
         DAILY_COUNT_REDIS_SCRIPT.setScriptText(DAILY_COUNT_SCRIPT);
         DAILY_COUNT_REDIS_SCRIPT.setResultType(Long.class);
+        TOKEN_BUCKET_REDIS_SCRIPT = new DefaultRedisScript<>();
+        TOKEN_BUCKET_REDIS_SCRIPT.setScriptText(TOKEN_BUCKET_SCRIPT);
+        TOKEN_BUCKET_REDIS_SCRIPT.setResultType(Long.class);
     }
     /**
      * 滑动窗口限流检查
@@ -158,6 +205,29 @@ public class RateLimitRedisUtil {
                 keys,
                 String.valueOf(maxCount),
                 String.valueOf(86400)
+        );
+        return Long.valueOf(1L).equals(result);
+    }
+
+    /**
+     * 令牌桶限流检查
+     *
+     * @param redisKey              Redis Key
+     * @param capacity              桶容量（最大令牌数，即最大突发量）
+     * @param refillIntervalSeconds 每个令牌的补充间隔（秒）
+     * @return true=放行，false=被限流
+     */
+    public boolean tokenBucketAllow(String redisKey, int capacity, int refillIntervalSeconds) {
+        long now = System.currentTimeMillis();
+        long ttlSeconds = (long) capacity * refillIntervalSeconds * 2;
+        List<String> keys = Collections.singletonList(redisKey);
+        Long result = stringStringRedisTemplate.execute(
+                TOKEN_BUCKET_REDIS_SCRIPT,
+                keys,
+                String.valueOf(capacity),
+                String.valueOf(refillIntervalSeconds),
+                String.valueOf(now),
+                String.valueOf(ttlSeconds)
         );
         return Long.valueOf(1L).equals(result);
     }

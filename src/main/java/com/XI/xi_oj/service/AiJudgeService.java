@@ -1,7 +1,7 @@
 package com.XI.xi_oj.service;
 
+import com.XI.xi_oj.model.dto.judge.CustomTestResultDTO;
 import com.XI.xi_oj.model.dto.judge.JudgeResultDTO;
-import com.XI.xi_oj.model.entity.QuestionSubmit;
 
 
 /**
@@ -25,5 +25,17 @@ public interface AiJudgeService {
      * @return 判题结果 DTO
      */
     JudgeResultDTO submitCode(Long questionId, String code, String language, Long userId);
+
+    /**
+     * 自定义输入测试：用指定输入分别执行用户代码和标准答案，对比输出
+     * 不创建提交记录，不走 doJudge 流程，直接调用沙箱
+     *
+     * @param questionId  题目ID（用于获取标准答案代码）
+     * @param code        用户代码
+     * @param language    代码语言
+     * @param customInput 自定义测试输入
+     * @return 对比结果
+     */
+    CustomTestResultDTO runCustomTest(Long questionId, String code, String language, String customInput);
 
 }

@@ -1059,20 +1059,42 @@ VALUES
 
 ---
 
-## 十、AI接口限流预留说明
+## 十、AI接口限流说明
 
-本文档仅覆盖**题目提交限流**。AI接口限流将在 AIGC 功能全部落地后单独设计，但基础设施可复用本方案：
+本方案已覆盖 AI 接口限流，包含以下维度：
 
-| 复用内容 | AI限流扩展点 |
-|----------|-------------|
-| `RateLimitTypeEnum` | 新增 `AI_CHAT_USER_DAY`、`AI_ANALYSIS_USER_HOUR` 等枚举值 |
-| `@RateLimit` 注解 | 直接标注在 AI 接口方法上，声明 AI 维度的限流类型 |
-| `RateLimitRedisUtil` | 不需要改动，直接复用 `slidingWindowAllow` / `dailyCountAllow` |
-| `rate_limit_rule` 表 | 新增 AI 相关规则行即可，表结构无需变更 |
-| `RateLimitInterceptor` | 在 `switch` 块中新增 AI 限流类型的 case 分支 |
-| 管理员配置接口 | 直接复用，只需在前端管理页加 AI 规则的筛选展示 |
+### 10.1 AI 用户级/IP级限流
 
-> **AI限流特殊需求**（预研）：AI接口还需考虑 Token 消耗量限流（每日最大 Token 上限），该逻辑需在 AI 调用层单独实现，不属于本方案范畴，将在 AI限流设计文档中详细描述。
+| 规则 | 算法 | 说明 |
+|------|------|------|
+| `AI_IP_MINUTE` | 滑动窗口 | 同一IP每分钟最多30次AI调用 |
+| `AI_USER_MINUTE` | 滑动窗口 | 同一用户每分钟最多10次AI调用 |
+| `AI_CHAT_USER_DAY` | 每日计数 | AI问答每日100次 |
+| `AI_CODE_USER_DAY` | 每日计数 | AI代码分析每日30次 |
+| `AI_QUESTION_USER_DAY` | 每日计数 | AI题目解析每日50次 |
+| `AI_WRONG_USER_DAY` | 每日计数 | AI错题分析每日30次 |
+
+### 10.2 AI 全局令牌桶限流
+
+**算法**：令牌桶（Token Bucket）
+
+**设计目的**：保护 AI API 配额，防止所有用户加起来的请求量超出系统承载能力。
+
+**参数映射**（复用 `rate_limit_rule` 表结构）：
+- `limit_count` = 桶容量（最大突发量，默认 20）
+- `window_seconds` = 每个令牌的补充间隔秒数（默认 3，即每 3 秒补充 1 个令牌）
+- 等效速率：约 20 次/分钟
+
+**Redis 实现**：
+- 使用 Hash 结构存储 `tokens`（当前令牌数）和 `lastRefill`（上次补充时间戳）
+- Lua 脚本保证原子性：计算补充量 → 尝试消费 → 返回结果
+- Key: `rl:global:ai:bucket`，TTL = capacity × refillInterval × 2
+
+**热更新**：管理员通过 AI 配置页面修改桶容量/补充间隔后，调用 `updateRateLimitRule` 接口立即刷新 Redis 缓存。下次请求即使用新参数。
+
+**检查顺序**：全局令牌桶 → 用户分钟级 → IP分钟级 → 功能日级。全局限流最先检查，一旦触发直接返回"AI系统繁忙，请稍后再试"。
+
+> **Token 消耗量限流**（预研）：AI接口还需考虑 Token 消耗量限流（每日最大 Token 上限），该逻辑需在 AI 调用层单独实现，不属于本方案范畴。
 
 ---
 

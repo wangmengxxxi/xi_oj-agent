@@ -1,6 +1,6 @@
 # XI OJ AIGC 工程化实施文档（进阶版）
 
-更新时间：2026-04-23
+更新时间：2026-04-27
 适用对象：有 Java/Spring 开发经验，希望快速接手 XI OJ AIGC 模块并持续迭代的工程师
 
 ---
@@ -777,10 +777,14 @@ private Date calcNextReviewTime(int reviewCount) {
 | `find_similar_questions` | 按题目ID查找向量相似题目 | `questionId` | `OJKnowledgeRetriever.retrieveSimilarQuestions()` + `QuestionService.listByIds()` | OJChatAgent |
 | `list_user_wrong_questions` | 列出用户所有错题 | `userId`（由 ThreadLocal/参数双重解析） | `AiWrongQuestionService.listMyWrongQuestions()` | OJChatAgent |
 | `query_user_submit_history` | 查询用户提交记录 | `userId, questionId`（questionId 可选） | `QuestionSubmitService.getQueryWrapper()` + `page()` | OJChatAgent |
+| `query_user_mastery` | 分析用户各知识点掌握情况（AC率、错题数） | `userId`（由 ThreadLocal/参数双重解析） | `QuestionSubmitMapper.selectTagMastery()` | OJChatAgent |
+| `get_question_hints` | 分层提示引导（Level 1考点→Level 2方向→Level 3框架） | `questionId, hintLevel` | `QuestionService.getById()` + `OJKnowledgeRetriever.retrieveSimilarQuestions()` | OJChatAgent |
+| `run_custom_test` | 自定义输入测试用户代码并与标准答案对比 | `questionId, code, language, customInput` | `AiJudgeService.runCustomTest()` → `CodeSandBox.executeCode()` | OJChatAgent |
+| `diagnose_error_pattern` | 分析用户错题的系统性错误模式 | `userId`（由 ThreadLocal/参数双重解析） | `AiWrongQuestionService.listMyWrongQuestions()` + `OJKnowledgeRetriever.retrieveByType()` | OJChatAgent |
 
 ### 11.2 userId 安全注入（ThreadLocal + 参数双重解析）
 
-`judge_user_code`、`query_user_wrong_question`、`list_user_wrong_questions`、`query_user_submit_history` 需要 `userId` 来标识当前用户。早期设计将 `userId` 作为工具参数由模型填写，存在安全隐患（模型可能幻觉出错误的 userId）。
+`judge_user_code`、`query_user_wrong_question`、`list_user_wrong_questions`、`query_user_submit_history`、`query_user_mastery`、`diagnose_error_pattern` 需要 `userId` 来标识当前用户。早期设计将 `userId` 作为工具参数由模型填写，存在安全隐患（模型可能幻觉出错误的 userId）。
 
 当前方案采用双重解析：工具方法同时接受参数传入的 userId 和 ThreadLocal 中的 userId，优先使用参数值（流式场景下 ThreadLocal 跨线程失效时由模型从上下文信息中获取），ThreadLocal 作为同步调用的兜底：
 
@@ -850,18 +854,20 @@ public void checkAiSwitch(JoinPoint joinPoint) {
 
 ### 12.2 AI 分层限流
 
-| 限流维度 | 限流粒度 | 默认阈值 | 覆盖范围 |
-|---|---|---|---|
-| `AI_USER_MINUTE` | 用户/分钟 | 10次 | 所有 AI 接口共享 |
-| `AI_IP_MINUTE` | IP/分钟 | 30次 | 所有 AI 接口共享 |
-| `AI_CHAT_USER_DAY` | 用户/天 | 100次 | 仅 AI 问答 |
-| `AI_CODE_USER_DAY` | 用户/天 | 30次 | 仅代码分析 |
-| `AI_QUESTION_USER_DAY` | 用户/天 | 50次 | 仅题目解析 |
-| `AI_WRONG_USER_DAY` | 用户/天 | 30次 | 仅错题分析 |
+| 限流维度 | 限流粒度 | 默认阈值 | 覆盖范围 | 算法 |
+|---|---|---|---|---|
+| `AI_GLOBAL_TOKEN_BUCKET` | 全局 | 桶容量20，每3秒补1令牌 | 所有 AI 接口共享 | 令牌桶 |
+| `AI_USER_MINUTE` | 用户/分钟 | 10次 | 所有 AI 接口共享 | 滑动窗口 |
+| `AI_IP_MINUTE` | IP/分钟 | 30次 | 所有 AI 接口共享 | 滑动窗口 |
+| `AI_CHAT_USER_DAY` | 用户/天 | 100次 | 仅 AI 问答 | 每日计数 |
+| `AI_CODE_USER_DAY` | 用户/天 | 30次 | 仅代码分析 | 每日计数 |
+| `AI_QUESTION_USER_DAY` | 用户/天 | 50次 | 仅题目解析 | 每日计数 |
+| `AI_WRONG_USER_DAY` | 用户/天 | 30次 | 仅错题分析 | 每日计数 |
 
 限流规则存储在 `rate_limit_rule` 表中，通过 `@RateLimit` 注解声明，`RateLimitInterceptor` AOP 执行。
 
 设计亮点：
+- 全局令牌桶保护 AI API 配额，允许突发但控制长期速率。
 - 分钟级限流防突发（共享池），日级限流控成本（按模块独立）。
 - 限流规则可通过数据库动态调整，无需重启。
 
@@ -980,7 +986,7 @@ return aiChatService.chatStream(chatId, loginUser.getId(), message)
 | 5 | 会话记忆 | 仅内存态或单 Redis | `Redis L1 + MySQL L2` 双层记忆 | 可恢复、可追溯 |
 | 6 | 流式协议 | 模块各自定义 | 统一 `d/done/error` JSON 事件 | 前端协议统一 |
 | 7 | 参数治理 | Prompt/模型参数硬编码 | `ai_config` 配置中心动态治理 | 运维友好 |
-| 8 | 风险控制 | 无统一守门 | 全局开关 AOP + AI 分层限流 | 成本与稳定可控 |
+| 8 | 风险控制 | 无统一守门 | 全局开关 AOP + AI 七维限流（含全局令牌桶） | 成本与稳定可控 |
 | 9 | 历史分页 | OFFSET 翻页 | 游标分页 `(createTime,id)` | 避免重复漏读 |
 | 10 | AI 判题隔离 | 与正常提交混用 | `source='ai_tool'` 隔离 | 不污染统计 |
 | 11 | Prompt 安全 | 无防护 | 乱码检测 + 空值回退 + 默认值兜底 | 防止异常 Prompt |
@@ -1109,10 +1115,11 @@ return aiChatService.chatStream(chatId, loginUser.getId(), message)
 
 **XI OJ 的做法：**
 - AOP 切面自动拦截所有 `Ai*Controller`（排除配置控制器），一键关闭所有 AI 功能。
-- 六维限流策略：分钟级（用户/IP 共享）+ 日级（按模块独立）。
-- 限流规则存储在数据库中，可动态调整。
+- 七维限流策略：全局令牌桶（保护 API 配额）+ 分钟级（用户/IP 共享）+ 日级（按模块独立）。
+- 全局令牌桶采用 Redis Lua 脚本实现，允许突发但控制长期平均速率。
+- 限流规则存储在数据库中，可动态调整，修改后即时生效。
 
-**工程价值：** 成本可控、风险可控，出现异常时可以秒级关闭所有 AI 功能。
+**工程价值：** 成本可控、风险可控，出现异常时可以秒级关闭所有 AI 功能。全局令牌桶兜底防止所有用户请求总量超出 API 配额。
 
 #### 优化 9：游标分页替代 OFFSET 分页
 
@@ -1300,7 +1307,9 @@ return aiChatService.chatStream(chatId, loginUser.getId(), message)
 |---|---|---|---|
 | 题目页上下文对话小窗 | 做题页嵌入悬浮 AI 对话，自动注入题目上下文，Agent 工具自然触发 | P0 | ✅ 已完成 |
 | OJTools userId 安全注入 | 工具参数中的 userId 改为 ThreadLocal + 参数双重解析，防止模型幻觉 | P0 | ✅ 已完成 |
-| OJTools 工具扩展（3→7） | 新增 search_questions、find_similar_questions、list_user_wrong_questions、query_user_submit_history 四个工具，覆盖题目搜索、相似推荐、错题列表、提交记录查询场景 | P0 | ✅ 已完成 |
+| OJTools 工具扩展（3→7→11） | 新增 search_questions、find_similar_questions、list_user_wrong_questions、query_user_submit_history 四个工具，覆盖题目搜索、相似推荐、错题列表、提交记录查询场景；再新增 query_user_mastery、get_question_hints、run_custom_test、diagnose_error_pattern 四个工具，支持智能辅导和错误诊断 | P0 | ✅ 已完成 |
+| 智能辅导（苏格拉底式引导） | 系统 Prompt 升级为苏格拉底式教学策略，通过 query_user_mastery 个性化辅导 + get_question_hints 分层提示引导用户独立思考 | P0 | ✅ 已完成 |
+| 错误诊断（深度分析） | run_custom_test 支持自定义输入反例验证 + diagnose_error_pattern 系统性错误模式分析 + 错题分析 Prompt 增强（错误分类/反例推测/针对性练习） | P0 | ✅ 已完成 |
 | 错题复习提醒 | 基于 `nextReviewTime` 的定时提醒推送 | P1 | 待开发 |
 | 学习看板 | 错题趋势、复习进度、AI 使用统计可视化 | P2 | 待开发 |
 | 知识库增量同步 | 题目新增/修改时增量更新向量，替代全量重建 | P1 | 待开发 |

@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_GLOBAL_TOKEN_BUCKET;
 import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_IP_MINUTE;
 import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_USER_MINUTE;
 import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_WRONG_USER_DAY;
@@ -59,7 +60,7 @@ public class AiWrongQuestionController {
         return ResultUtils.success(aiWrongQuestionService.listDueReviewQuestions(loginUser.getId()));
     }
 
-    @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_WRONG_USER_DAY},
+    @RateLimit(types = {AI_GLOBAL_TOKEN_BUCKET, AI_USER_MINUTE, AI_IP_MINUTE, AI_WRONG_USER_DAY},
             message = "AI错题分析调用过于频繁，请稍后再试")
     @GetMapping("/analysis")
     public BaseResponse<String> analyzeWrongQuestion(@RequestParam Long wrongQuestionId, HttpServletRequest request) {
@@ -67,7 +68,7 @@ public class AiWrongQuestionController {
         return ResultUtils.success(aiWrongQuestionService.analyzeWrongQuestion(loginUser.getId(), wrongQuestionId));
     }
 
-    @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_WRONG_USER_DAY},
+    @RateLimit(types = {AI_GLOBAL_TOKEN_BUCKET, AI_USER_MINUTE, AI_IP_MINUTE, AI_WRONG_USER_DAY},
             message = "AI错题分析调用过于频繁，请稍后再试")
     @PostMapping(value = "/analysis/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> analyzeWrongQuestionStream(@RequestBody @Valid WrongQuestionReviewRequest wrongRequest,

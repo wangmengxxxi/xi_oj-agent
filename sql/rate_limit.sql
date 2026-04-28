@@ -31,3 +31,7 @@ INSERT INTO rate_limit_rule (rule_key, rule_name, limit_count, window_seconds, i
     ('ai:code:user:day',     'AI代码分析用户-每日限流',   30,  86400, 1, 'AI代码分析用户每天最多调用30次'),
     ('ai:question:user:day', 'AI题目解析用户-每日限流',   50,  86400, 1, 'AI题目解析用户每天最多调用50次'),
     ('ai:wrong:user:day',    'AI错题分析用户-每日限流',   30,  86400, 1, 'AI错题分析用户每天最多调用30次');
+
+-- AI全局令牌桶限流规则（limit_count=桶容量，window_seconds=每个令牌补充间隔秒数）
+INSERT INTO rate_limit_rule (rule_key, rule_name, limit_count, window_seconds, is_enable, description) VALUES
+    ('ai:global:token_bucket', 'AI全局令牌桶限流', 20, 3, 1, 'AI全局令牌桶限流（桶容量20，每3秒补充1个令牌，约20次/分钟）');

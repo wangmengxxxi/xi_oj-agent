@@ -4,7 +4,13 @@ import cn.hutool.json.JSONUtil;
 import com.XI.xi_oj.common.ErrorCode;
 import com.XI.xi_oj.exception.BusinessException;
 import com.XI.xi_oj.judge.JudgeService;
+import com.XI.xi_oj.judge.codesandbox.CodeSandBox;
+import com.XI.xi_oj.judge.codesandbox.CodeSandBoxFactory;
+import com.XI.xi_oj.judge.codesandbox.CodeSandBoxProxy;
+import com.XI.xi_oj.judge.codesandbox.model.ExecuteCodeRequest;
+import com.XI.xi_oj.judge.codesandbox.model.ExecuteCodeResponse;
 import com.XI.xi_oj.judge.codesandbox.model.JudgeInfo;
+import com.XI.xi_oj.model.dto.judge.CustomTestResultDTO;
 import com.XI.xi_oj.model.dto.judge.JudgeResultDTO;
 import com.XI.xi_oj.model.entity.Question;
 import com.XI.xi_oj.model.entity.QuestionSubmit;
@@ -14,17 +20,24 @@ import com.XI.xi_oj.service.QuestionService;
 import com.XI.xi_oj.service.QuestionSubmitService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+
+import java.util.Collections;
+import java.util.List;
 
 @Service
 @Slf4j
 public class AiJudgeServiceImpl implements AiJudgeService {
     @Resource
-    private JudgeService judgeService;             // 单体阶段：直接注入；微服务阶段：换成 Feign Client
+    private JudgeService judgeService;
     @Resource
     private QuestionService questionService;
     @Resource
     private QuestionSubmitService questionSubmitService;
+
+    @Value("${codesandbox.type:example}")
+    private String sandboxType;
 
     @Override
     public JudgeResultDTO submitCode(Long questionId, String code, String language, Long userId) {
@@ -75,6 +88,75 @@ public class AiJudgeServiceImpl implements AiJudgeService {
                 .timeUsed(judgeInfo.getTime())
                 .memoryUsed(judgeInfo.getMemory())
                 .errorMsg("Accepted".equalsIgnoreCase(status) ? null : status)
+                .build();
+    }
+
+    @Override
+    public CustomTestResultDTO runCustomTest(Long questionId, String code, String language, String customInput) {
+        Question question = questionService.getById(questionId);
+        if (question == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "题目不存在");
+        }
+        String answer = question.getAnswer();
+        if (answer == null || answer.isBlank()) {
+            return CustomTestResultDTO.builder()
+                    .errorMsg("该题目没有标准答案代码，无法对比")
+                    .match(false)
+                    .build();
+        }
+
+        CodeSandBox sandbox = new CodeSandBoxProxy(CodeSandBoxFactory.newInstance(sandboxType));
+        List<String> inputList = Collections.singletonList(customInput);
+
+        String userOutput;
+        try {
+            ExecuteCodeResponse userResp = sandbox.executeCode(
+                    ExecuteCodeRequest.builder().code(code).language(language).inputList(inputList).build());
+            if (userResp.getOutputList() == null || userResp.getOutputList().isEmpty()) {
+                userOutput = "";
+            } else {
+                userOutput = userResp.getOutputList().get(0);
+            }
+            if (userResp.getStatus() != null && userResp.getStatus() != 1) {
+                return CustomTestResultDTO.builder()
+                        .userOutput(userResp.getMessage())
+                        .expectedOutput(null)
+                        .match(false)
+                        .errorMsg("用户代码执行异常: " + userResp.getMessage())
+                        .build();
+            }
+        } catch (Exception e) {
+            log.error("[AiJudge] 用户代码自定义测试执行失败: {}", e.getMessage());
+            return CustomTestResultDTO.builder()
+                    .errorMsg("用户代码执行失败: " + e.getMessage())
+                    .match(false)
+                    .build();
+        }
+
+        String expectedOutput;
+        try {
+            ExecuteCodeResponse answerResp = sandbox.executeCode(
+                    ExecuteCodeRequest.builder().code(answer).language(language).inputList(inputList).build());
+            if (answerResp.getOutputList() == null || answerResp.getOutputList().isEmpty()) {
+                expectedOutput = "";
+            } else {
+                expectedOutput = answerResp.getOutputList().get(0);
+            }
+        } catch (Exception e) {
+            log.error("[AiJudge] 标准答案自定义测试执行失败: {}", e.getMessage());
+            return CustomTestResultDTO.builder()
+                    .userOutput(userOutput)
+                    .errorMsg("标准答案执行失败: " + e.getMessage())
+                    .match(false)
+                    .build();
+        }
+
+        boolean match = userOutput.trim().equals(expectedOutput.trim());
+        return CustomTestResultDTO.builder()
+                .userOutput(userOutput.trim())
+                .expectedOutput(expectedOutput.trim())
+                .match(match)
+                .errorMsg(match ? null : "输出不一致")
                 .build();
     }
 }

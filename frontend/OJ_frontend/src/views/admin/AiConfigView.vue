@@ -3,6 +3,8 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Message, Modal } from '@arco-design/web-vue'
 import { getAiConfig, updateAiConfig, rebuildQuestionVectors, importKnowledge } from '@/api/aiConfig'
+import { listRateLimitRules, updateRateLimitRule } from '@/api/rateLimit'
+import type { RateLimitRule } from '@/api/rateLimit'
 
 const router = useRouter()
 const loading = ref(false)
@@ -25,6 +27,59 @@ const form = reactive({
 })
 
 type FormKey = keyof typeof form
+
+// AI 全局令牌桶限流
+const TOKEN_BUCKET_KEY = 'ai:global:token_bucket'
+const rateLimitLoading = ref(false)
+const rateLimitSaving = ref(false)
+const tokenBucketRule = reactive({
+  limit_count: 20,
+  window_seconds: 3,
+  is_enable: 1,
+})
+
+async function loadTokenBucketRule() {
+  rateLimitLoading.value = true
+  try {
+    const res = await listRateLimitRules()
+    const rules: RateLimitRule[] = res.data.data ?? []
+    const rule = rules.find((r) => r.rule_key === TOKEN_BUCKET_KEY)
+    if (rule) {
+      tokenBucketRule.limit_count = rule.limit_count
+      tokenBucketRule.window_seconds = rule.window_seconds
+      tokenBucketRule.is_enable = rule.is_enable
+    }
+  } catch (err: any) {
+    Message.error(err?.message || '加载限流规则失败')
+  } finally {
+    rateLimitLoading.value = false
+  }
+}
+
+async function handleSaveTokenBucket() {
+  if (tokenBucketRule.limit_count <= 0) {
+    Message.warning('桶容量必须大于 0')
+    return
+  }
+  if (tokenBucketRule.window_seconds <= 0) {
+    Message.warning('补充间隔必须大于 0')
+    return
+  }
+  rateLimitSaving.value = true
+  try {
+    await updateRateLimitRule({
+      rule_key: TOKEN_BUCKET_KEY,
+      limit_count: tokenBucketRule.limit_count,
+      window_seconds: tokenBucketRule.window_seconds,
+      is_enable: tokenBucketRule.is_enable,
+    })
+    Message.success('全局限流配置保存成功，已同步 Redis 缓存')
+  } catch (err: any) {
+    Message.error(err?.message || '保存失败')
+  } finally {
+    rateLimitSaving.value = false
+  }
+}
 
 async function loadConfig() {
   loading.value = true
@@ -103,7 +158,10 @@ async function handleKnowledgeImport(_fileList: any[], fileItem: any) {
   }
 }
 
-onMounted(loadConfig)
+onMounted(() => {
+  loadConfig()
+  loadTokenBucketRule()
+})
 </script>
 
 <template>
@@ -131,6 +189,49 @@ onMounted(loadConfig)
               {{ form['ai.global.enable'] === 'true' ? '已开启' : '已关闭' }}
             </span>
           </a-form-item>
+        </div>
+
+        <!-- AI 全局限流（令牌桶） -->
+        <div class="config-section">
+          <div class="section-title">AI 全局限流</div>
+          <div class="field-hint" style="margin-bottom: 12px">
+            基于令牌桶算法，控制所有用户 AI 请求的总速率。修改后即时生效。
+          </div>
+          <a-spin :loading="rateLimitLoading">
+            <a-form-item label="启用全局限流">
+              <a-switch
+                v-model="tokenBucketRule.is_enable"
+                :checked-value="1"
+                :unchecked-value="0"
+                checked-color="#00b42a"
+              />
+              <span class="switch-label">
+                {{ tokenBucketRule.is_enable === 1 ? '已启用' : '已禁用' }}
+              </span>
+            </a-form-item>
+            <div class="rag-row">
+              <a-form-item label="桶容量（最大突发量）">
+                <a-input-number v-model="tokenBucketRule.limit_count" :min="1" :max="1000" style="width: 100%">
+                  <template #suffix>个</template>
+                </a-input-number>
+                <div class="field-hint">令牌桶最多容纳的令牌数，决定允许的最大突发请求量</div>
+              </a-form-item>
+              <a-form-item label="补充间隔">
+                <a-input-number v-model="tokenBucketRule.window_seconds" :min="1" :max="3600" style="width: 100%">
+                  <template #suffix>秒/个</template>
+                </a-input-number>
+                <div class="field-hint">每隔多少秒补充 1 个令牌，间隔越小速率越高</div>
+              </a-form-item>
+            </div>
+            <div class="field-hint" style="margin-top: 4px; color: #165dff">
+              当前等效速率：约 {{ tokenBucketRule.window_seconds > 0 ? Math.round(60 / tokenBucketRule.window_seconds) : '—' }} 次/分钟，最大突发 {{ tokenBucketRule.limit_count }} 次
+            </div>
+            <div style="margin-top: 12px">
+              <a-button type="primary" size="small" :loading="rateLimitSaving" @click="handleSaveTokenBucket">
+                保存限流配置
+              </a-button>
+            </div>
+          </a-spin>
         </div>
 
         <!-- 模型配置 -->

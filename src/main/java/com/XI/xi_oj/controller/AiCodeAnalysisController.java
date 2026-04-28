@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 
 import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_CODE_USER_DAY;
+import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_GLOBAL_TOKEN_BUCKET;
 import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_IP_MINUTE;
 import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_USER_MINUTE;
 
@@ -45,7 +46,7 @@ public class AiCodeAnalysisController {
         this.objectMapper = objectMapper;
     }
 
-    @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_CODE_USER_DAY},
+    @RateLimit(types = {AI_GLOBAL_TOKEN_BUCKET, AI_USER_MINUTE, AI_IP_MINUTE, AI_CODE_USER_DAY},
             message = "AI代码分析调用过于频繁，请稍后再试")
     @PostMapping("/analysis")
     public BaseResponse<String> analyzeCode(@RequestBody @Valid AiCodeAnalysisRequest request,
@@ -54,7 +55,7 @@ public class AiCodeAnalysisController {
         return ResultUtils.success(aiCodeAnalysisService.analyzeCode(loginUser.getId(), request));
     }
 
-    @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_CODE_USER_DAY},
+    @RateLimit(types = {AI_GLOBAL_TOKEN_BUCKET, AI_USER_MINUTE, AI_IP_MINUTE, AI_CODE_USER_DAY},
             message = "AI代码分析调用过于频繁，请稍后再试")
     @PostMapping(value = "/analysis/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> analyzeCodeStream(@RequestBody @Valid AiCodeAnalysisRequest request,

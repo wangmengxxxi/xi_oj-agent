@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_CHAT_USER_DAY;
+import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_GLOBAL_TOKEN_BUCKET;
 import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_IP_MINUTE;
 import static com.XI.xi_oj.model.enums.RateLimitTypeEnum.AI_USER_MINUTE;
 
@@ -46,7 +47,7 @@ public class AiChatController {
         this.objectMapper = objectMapper;
     }
 
-    @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_CHAT_USER_DAY})
+    @RateLimit(types = {AI_GLOBAL_TOKEN_BUCKET, AI_USER_MINUTE, AI_IP_MINUTE, AI_CHAT_USER_DAY})
     @PostMapping("/chat")
     public BaseResponse<String> chat(@RequestBody @Valid AiChatRequest request, HttpServletRequest httpRequest) {
         User loginUser = userService.getLoginUser(httpRequest);
@@ -54,7 +55,7 @@ public class AiChatController {
         return ResultUtils.success(result);
     }
 
-    @RateLimit(types = {AI_USER_MINUTE, AI_IP_MINUTE, AI_CHAT_USER_DAY})
+    @RateLimit(types = {AI_GLOBAL_TOKEN_BUCKET, AI_USER_MINUTE, AI_IP_MINUTE, AI_CHAT_USER_DAY})
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chatStream(@RequestBody @Valid AiChatRequest request,
                                                     HttpServletRequest httpRequest) {

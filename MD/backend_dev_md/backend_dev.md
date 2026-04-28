@@ -2015,6 +2015,43 @@ public String judgeUserCode(
 
 ---
 
+#### 5.1.3.2 智能辅导与错误诊断工具扩展（7→11）
+
+在原有 7 个工具基础上，新增 4 个工具方法，支持两个方向的 AI 能力增强：
+
+**方向一：智能辅导（苏格拉底式引导）**
+
+| 工具名 | 功能 | 核心实现 |
+|--------|------|----------|
+| `query_user_mastery` | 按知识点标签统计用户 AC 率和错题数，薄弱知识点排在前面 | `QuestionSubmitMapper.selectTagMastery()` — 聚合 SQL 通过 `JSON_TABLE` 展开 tags JSON 数组，JOIN question_submit 和 ai_wrong_question 统计 |
+| `get_question_hints` | 分层提示引导用户独立思考，Level 1 考点→Level 2 方向→Level 3 框架 | 复用 `OJKnowledgeRetriever.retrieveSimilarQuestions()` 检索相似题，从 answer 字段提取算法关键词（不暴露完整答案） |
+
+**方向二：错误诊断（WA/TLE/MLE 深度分析）**
+
+| 工具名 | 功能 | 核心实现 |
+|--------|------|----------|
+| `run_custom_test` | 用自定义输入分别执行用户代码和标准答案，对比输出 | `AiJudgeService.runCustomTest()` → 直接调用 `CodeSandBox.executeCode()`，不创建提交记录 |
+| `diagnose_error_pattern` | 聚合用户错题记录，按错误类型和知识点维度统计系统性错误模式 | 复用 `AiWrongQuestionService.listMyWrongQuestions()` + `OJKnowledgeRetriever.retrieveByType()` |
+
+**新增依赖类**：
+
+`CustomTestResultDTO`（`src/main/java/com/XI/xi_oj/model/dto/judge/CustomTestResultDTO.java`）：
+```java
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+public class CustomTestResultDTO {
+    private String userOutput;
+    private String expectedOutput;
+    private boolean match;
+    private String errorMsg;
+}
+```
+
+**系统 Prompt 升级**：`AiModelHolder.DEFAULT_CHAT_SYSTEM_PROMPT` 新增苏格拉底式辅导策略和错误诊断策略指令，引导 AI 主动使用新工具进行个性化教学和深度错误分析。
+
+**错题分析 Prompt 升级**：`AiWrongQuestionServiceImpl.DEFAULT_WRONG_ANALYSIS_PROMPT` 增加错误分类（5 种类型）、反例推测、针对性练习建议维度。
+
+---
+
 ### 5.2 AI代码智能分析与判题模块
 **功能描述**：对用户提交的代码进行多维度分析，包括代码评分、错误分析、改进建议、判题结果解读，对应截图中的「代码查看与智能分析」页面。
 
@@ -3000,7 +3037,7 @@ public boolean toggleLike(Long commentId, Long userId) {
 ### 5.9 AI接口限流模块
 **功能描述**：在现有 `@RateLimit` + Redis 限流体系基础上，扩展 AI 专属限流维度，控制大模型 API 调用成本，防止接口滥用，无需改动现有提交限流逻辑，完全向后兼容。
 
-> **现状对齐（2026-04-16）**：当前代码中的 `RateLimitTypeEnum` 仅包含 `submit:*` 维度，以下 `AI_*` 枚举与拦截逻辑为待新增方案。
+> **现状对齐（2026-04-27）**：`RateLimitTypeEnum` 已包含全部 `AI_*` 枚举值（含 `AI_GLOBAL_TOKEN_BUCKET`），拦截逻辑已实现并上线。
 
 **整合方式选型**：
 
@@ -3173,6 +3210,36 @@ public BaseResponse<String> analyzeWrongQuestion(@RequestParam Long wrongQuestio
 | AI错题分析（5.5） | 10次/分钟 | 30次/天 | 与代码分析同级，成本较高 |
 
 > 以上限额为推荐默认值，存储于 `rate_limit_rule` 表中，管理员可通过现有 `/admin/rate-limit/rule/update` 接口动态调整，**无需重启服务**。规则变更后自动刷新 Redis 缓存（TTL 5分钟内生效）。
+
+#### 5.9.6 AI 全局令牌桶限流
+
+在用户级/IP级限流之上，新增系统级全局限流，保护 AI API 配额不被所有用户的请求总量打爆。
+
+**算法选型**：令牌桶（Token Bucket），相比滑动窗口更适合全局场景——允许短时突发（桶内有余量时），同时控制长期平均速率。
+
+**参数映射**（复用 `rate_limit_rule` 表，无需改表结构）：
+
+| 字段 | 令牌桶含义 | 默认值 |
+|------|-----------|--------|
+| `limit_count` | 桶容量（最大突发量） | 20 |
+| `window_seconds` | 每个令牌的补充间隔（秒） | 3 |
+
+等效速率：约 20 次/分钟，最大突发 20 次。
+
+**新增枚举**：
+```java
+AI_GLOBAL_TOKEN_BUCKET("ai:global:token_bucket")
+```
+
+**Redis 实现**：
+- 数据结构：Hash（`tokens` + `lastRefill` 两个字段）
+- Key：`rl:global:ai:bucket`
+- Lua 脚本原子操作：根据时间差补充令牌 → 尝试消费 1 个 → 返回放行/拒绝
+- TTL：`capacity × refillInterval × 2`
+
+**检查顺序**：`AI_GLOBAL_TOKEN_BUCKET` 放在 `@RateLimit` 注解的 `types` 数组首位，最先检查。全局限流触发时返回"AI系统繁忙，请稍后再试"。
+
+**热更新**：管理员通过前端 AI 配置页面修改参数后，调用 `updateRateLimitRule` 接口立即刷新 Redis 缓存，下次请求即使用新参数。
 
 ### 5.10 向量库数据导入方案
 

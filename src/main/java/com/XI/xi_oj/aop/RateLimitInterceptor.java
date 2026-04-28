@@ -187,6 +187,16 @@ public class RateLimitInterceptor {
                                     "今日AI错题分析次数已达上限（" + rule.getLimit_count() + " 次），明日再来吧"));
                 }
             }
+            case AI_GLOBAL_TOKEN_BUCKET -> {
+                redisKey = "rl:global:ai:bucket";
+                allowed = rateLimitRedisUtil.tokenBucketAllow(redisKey,
+                        rule.getLimit_count(), rule.getWindow_seconds());
+                if (!allowed) {
+                    log.warn("[RateLimit] AI全局令牌桶限流触发，clientIp={}", clientIp);
+                    throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS,
+                            buildMessage(customMessage, "AI系统繁忙，请稍后再试"));
+                }
+            }
             default -> log.warn("[RateLimit] 未知限流类型：{}", type);
         }
     }

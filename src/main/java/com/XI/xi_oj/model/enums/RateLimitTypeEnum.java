@@ -25,7 +25,9 @@ public enum RateLimitTypeEnum {
     /** AI题目解析 用户每日限流 */
     AI_QUESTION_USER_DAY("ai:question:user:day"),
     /** AI错题分析 用户每日限流 */
-    AI_WRONG_USER_DAY("ai:wrong:user:day");
+    AI_WRONG_USER_DAY("ai:wrong:user:day"),
+    /** AI全局令牌桶限流（保护AI API配额，所有用户共享） */
+    AI_GLOBAL_TOKEN_BUCKET("ai:global:token_bucket");
     private final String ruleKey;
     RateLimitTypeEnum(String ruleKey) {
         this.ruleKey = ruleKey;
