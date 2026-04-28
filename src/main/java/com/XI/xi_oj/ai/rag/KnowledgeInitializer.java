@@ -190,12 +190,43 @@ public class KnowledgeInitializer implements CommandLineRunner {
                     blockIndex, body.length());
         }
 
-        Map<String, Object> segmentMetadata = new HashMap<>(4);
+        Map<String, Object> segmentMetadata = new HashMap<>(8);
         segmentMetadata.put("content_type", contentType);
         segmentMetadata.put("tag", tag);
         segmentMetadata.put("title", title);
-        String fullText = title + "\n" + body;
+
+        String imageUrls = metadataMap.get("image_urls");
+        if (imageUrls != null && !imageUrls.isBlank()) {
+            segmentMetadata.put("image_urls", imageUrls);
+        }
+        String sourceType = metadataMap.get("source_type");
+        if (sourceType != null && !sourceType.isBlank()) {
+            segmentMetadata.put("source_type", sourceType);
+        }
+
+        String fullText = buildSearchableText(title, tag, contentType, sourceType, imageUrls, body);
         return TextSegment.from(fullText, Metadata.from(segmentMetadata));
+    }
+
+    private String buildSearchableText(String title,
+                                       String tag,
+                                       String contentType,
+                                       String sourceType,
+                                       String imageUrls,
+                                       String body) {
+        StringBuilder text = new StringBuilder();
+        text.append("title: ").append(title).append("\n");
+        text.append("tag: ").append(tag).append("\n");
+        text.append("content_type: ").append(contentType).append("\n");
+        if (sourceType != null && !sourceType.isBlank()) {
+            text.append("source_type: ").append(sourceType).append("\n");
+        }
+        if (imageUrls != null && !imageUrls.isBlank()) {
+            text.append("has_images: true\n");
+            text.append("image_urls: ").append(imageUrls).append("\n");
+        }
+        text.append("\n").append(body);
+        return text.toString();
     }
 
     public void validateImportedCount(int importedCount) {

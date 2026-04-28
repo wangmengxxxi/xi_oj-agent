@@ -2,6 +2,7 @@ package com.XI.xi_oj.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
 import com.XI.xi_oj.ai.agent.AiModelHolder;
+import com.XI.xi_oj.ai.filter.LinkValidationFilter;
 import com.XI.xi_oj.ai.model.AiChatHistoryPageRequest;
 import com.XI.xi_oj.ai.model.AiChatHistoryPageResponse;
 import com.XI.xi_oj.ai.model.AiChatRecord;
@@ -35,6 +36,9 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
     @Resource
     private AiChatAsyncService aiChatAsyncService;
 
+    @Resource
+    private LinkValidationFilter linkValidationFilter;
+
     @Override
     public String chat(String chatId, Long userId, String message) {
         return chat(chatId, userId, message, null);
@@ -47,6 +51,7 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
         OJTools.setCurrentUserId(userId);
         try {
             String answer = aiModelHolder.getOjChatAgent().chat(memoryId, enrichedMessage);
+            answer = linkValidationFilter.validate(answer);
             saveRecord(userId, chatId, message, answer);
             return answer;
         } finally {
@@ -65,7 +70,8 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
         String memoryId = buildMemoryId(userId, chatId);
         String enrichedMessage = buildContextualMessage(questionId, userId, message);
         OJTools.setCurrentUserId(userId);
-        return aiModelHolder.getOjChatAgent().chatStream(memoryId, enrichedMessage)
+        Flux<String> rawStream = aiModelHolder.getOjChatAgent().chatStream(memoryId, enrichedMessage);
+        return linkValidationFilter.apply(rawStream)
                 .doOnNext(buffer::append)
                 .doOnComplete(() -> aiChatAsyncService.saveRecordAsync(userId, chatId, message, buffer.toString()))
                 .doOnError(e -> log.error("[AI Chat] stream failed, chatId={}", chatId, e))

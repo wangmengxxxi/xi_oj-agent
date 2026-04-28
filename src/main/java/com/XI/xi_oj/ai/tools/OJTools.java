@@ -3,7 +3,6 @@ package com.XI.xi_oj.ai.tools;
 import com.XI.xi_oj.ai.rag.OJKnowledgeRetriever;
 import com.XI.xi_oj.model.dto.judge.CustomTestResultDTO;
 import com.XI.xi_oj.model.dto.judge.JudgeResultDTO;
-import com.XI.xi_oj.model.dto.question.QuestionQueryRequest;
 import com.XI.xi_oj.model.dto.question.WrongQuestionVO;
 import com.XI.xi_oj.model.dto.questionsubmit.QuestionSubmitQueryRequest;
 import com.XI.xi_oj.model.entity.Question;
@@ -20,7 +19,6 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.text.SimpleDateFormat;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -169,28 +167,27 @@ public class OJTools {
 
     @Tool(
             name = "search_questions",
-            value = "按条件搜索题目列表。支持按关键词（标题模糊匹配）、标签（如动态规划、数组、二叉树）、难度（easy/medium/hard）筛选，返回最多10道题目。"
+            value = "按条件搜索题目列表。keyword 会同时匹配标题和标签，tag 专门按标签筛选。返回最多10道题目。"
     )
     public String searchQuestions(
-            @P("搜索关键词，按标题模糊匹配，可为空") String keyword,
-            @P("题目标签，如 动态规划、数组、贪心 等，可为空") String tag,
+            @P("搜索关键词，同时在标题和标签中模糊匹配，如'队列'、'二分查找'") String keyword,
+            @P("题目标签精确筛选，如 动态规划、数组、贪心、队列 等") String tag,
             @P("难度等级：easy / medium / hard，可为空") String difficulty
     ) {
-        QuestionQueryRequest req = new QuestionQueryRequest();
+        QueryWrapper<Question> wrapper = new QueryWrapper<>();
+        wrapper.eq("isDelete", false);
         if (keyword != null && !keyword.isBlank()) {
-            req.setTitle(keyword.trim());
+            String kw = keyword.trim();
+            wrapper.and(w -> w.like("title", kw).or().like("tags", kw));
         }
         if (tag != null && !tag.isBlank()) {
-            req.setTags(Collections.singletonList(tag.trim()));
+            wrapper.like("tags", tag.trim());
         }
         if (difficulty != null && !difficulty.isBlank()) {
-            req.setDifficulty(difficulty.trim());
+            wrapper.eq("difficulty", difficulty.trim().toLowerCase(java.util.Locale.ROOT));
         }
-        req.setPageSize(10);
-        req.setSortField("createTime");
-        req.setSortOrder("descend");
+        wrapper.orderByDesc("createTime");
 
-        QueryWrapper<Question> wrapper = questionService.getQueryWrapper(req);
         Page<Question> page = questionService.page(new Page<>(1, 10), wrapper);
         List<Question> records = page.getRecords();
         if (records == null || records.isEmpty()) {

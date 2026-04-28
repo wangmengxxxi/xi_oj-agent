@@ -11,6 +11,7 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.embedding.EmbeddingModel;
+import com.XI.xi_oj.ai.rag.ImageAwareContentRetriever;
 import dev.langchain4j.rag.DefaultRetrievalAugmentor;
 import dev.langchain4j.rag.RetrievalAugmentor;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
@@ -300,7 +301,13 @@ public class AiModelHolder {
             - 工具调用失败时，直接告知用户"该功能暂时不可用"，绝对不要根据自身知识编造分析内容或虚构数据来替代工具结果；
             - 绝对不要自己编造题目名称、题目ID或题目链接，所有题目信息必须来自工具返回结果；
             - 如果用户要求推荐题目，必须先调用 search_questions 或 find_similar_questions 获取真实题目数据，严禁根据自身知识虚构题目；
-            - 回答中只能包含工具实际返回的链接，不要自行拼接 /view/question/xxx 格式的链接。
+            - 回答中只能包含工具实际返回的链接，不要自行拼接 /view/question/xxx 格式的链接；
+            - 讲解知识点时，如果想附带推荐练习题目，必须先调用 search_questions 搜索真实题目，没有调用工具就不要提及任何具体题目名称、ID或链接；
+            - 如果搜索不到相关题目，直接说"平台暂无相关练习题"，不要编造。
+            - 用户要求按知识点、数据结构或算法类型搜索题目时，优先使用 search_questions 的 keyword 参数传入知识点名称（如"队列"、"动态规划"），系统会同时匹配标题和标签。
+            【图片引用规范】
+            - 当RAG检索到的知识点包含配图（markdown图片格式 ![...](url)）时，在回答中原样保留这些图片引用，帮助用户直观理解；
+            - 不要修改图片URL，不要自行编造图片链接。
             """;
 
     private static final String DEFAULT_PARSE_SYSTEM_PROMPT = """
@@ -355,12 +362,15 @@ public class AiModelHolder {
         int topK = Integer.parseInt(aiConfigService.getConfigValue("ai.rag.top_k"));
         double minScore = Double.parseDouble(aiConfigService.getConfigValue("ai.rag.similarity_threshold"));
 
-        EmbeddingStoreContentRetriever knowledgeRetriever = EmbeddingStoreContentRetriever.builder()
+        EmbeddingStoreContentRetriever baseKnowledgeRetriever = EmbeddingStoreContentRetriever.builder()
                 .embeddingStore(embeddingStore)
                 .embeddingModel(this.embeddingModel)
                 .maxResults(topK)
                 .minScore(minScore)
                 .build();
+
+        ImageAwareContentRetriever knowledgeRetriever =
+                new ImageAwareContentRetriever(baseKnowledgeRetriever);
 
         EmbeddingStoreContentRetriever questionRetriever = EmbeddingStoreContentRetriever.builder()
                 .embeddingStore(questionEmbeddingStore)

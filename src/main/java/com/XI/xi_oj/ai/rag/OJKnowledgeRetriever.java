@@ -70,7 +70,7 @@ public class OJKnowledgeRetriever {
                     .filter(match -> match.score() >= minScore)
                     .filter(match -> match.embedded() != null)
                     .map(EmbeddingMatch::embedded)
-                    .map(TextSegment::text)
+                    .map(this::formatSegmentWithImages)
                     .collect(Collectors.joining("\n\n"));
 
             return context.isBlank() ? "无相关知识点" : context;
@@ -78,6 +78,22 @@ public class OJKnowledgeRetriever {
             log.warn("[RAG] 知识库检索失败，向量数据库可能不可用: {}", e.getMessage());
             return "无相关知识点";
         }
+    }
+
+    private String formatSegmentWithImages(TextSegment segment) {
+        String text = segment.text();
+        String imageUrls = segment.metadata().getString("image_urls");
+        if (imageUrls == null || imageUrls.isBlank()) {
+            return text;
+        }
+        StringBuilder sb = new StringBuilder(text);
+        for (String url : imageUrls.split(",")) {
+            String trimmed = url.trim();
+            if (!trimmed.isEmpty()) {
+                sb.append("\n![配图](").append(trimmed).append(")");
+            }
+        }
+        return sb.toString();
     }
 
     public List<Long> retrieveSimilarQuestions(Long questionId, String questionContent) {

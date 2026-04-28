@@ -2,11 +2,13 @@ package com.XI.xi_oj.ai.rag.parser;
 
 import com.XI.xi_oj.common.ErrorCode;
 import com.XI.xi_oj.exception.BusinessException;
+import com.XI.xi_oj.manager.MinioService;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFPictureData;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -24,6 +26,7 @@ public class WordDocumentParser implements DocumentParser {
     private static final int MAX_CHUNK_LENGTH = 1000;
     private static final int MIN_CHUNK_LENGTH = 80;
     private static final int MAX_TITLE_LENGTH = 60;
+    private static final int MIN_IMAGE_SIZE = 5000;
 
     private static final Pattern TITLE_PATTERN = Pattern.compile(
             "^(" +
@@ -56,6 +59,12 @@ public class WordDocumentParser implements DocumentParser {
             Map.entry("分治", "分治算法")
     );
 
+    private final MinioService minioService;
+
+    public WordDocumentParser(MinioService minioService) {
+        this.minioService = minioService;
+    }
+
     @Override
     public boolean supports(String extension) {
         return "docx".equalsIgnoreCase(extension);
@@ -63,14 +72,27 @@ public class WordDocumentParser implements DocumentParser {
 
     @Override
     public String parse(InputStream inputStream, String filename) {
+        return parseWithImages(inputStream, filename).markdownBlocks();
+    }
+
+    @Override
+    public ParseResult parseWithImages(InputStream inputStream, String filename) {
         try (XWPFDocument document = new XWPFDocument(inputStream)) {
             List<ChunkResult> chunks = parseDocument(document);
             if (chunks.isEmpty()) {
                 throw new BusinessException(ErrorCode.PARAMS_ERROR,
                         "Word 文档解析后未生成有效知识块");
             }
-            log.info("[Word Parser] file={}, chunks={}", filename, chunks.size());
-            return buildMarkdownBlocks(chunks);
+
+            List<String> imageUrls = extractAndUploadImages(document, filename);
+
+            // Word 无法精确按段落关联图片，将所有图片分配给第一个 chunk
+            if (!imageUrls.isEmpty() && !chunks.isEmpty()) {
+                chunks.get(0).setImageUrls(String.join(",", imageUrls));
+            }
+
+            log.info("[Word Parser] file={}, chunks={}, images={}", filename, chunks.size(), imageUrls.size());
+            return new ParseResult(buildMarkdownBlocks(chunks), imageUrls);
         } catch (BusinessException e) {
             throw e;
         } catch (IOException e) {
@@ -78,6 +100,29 @@ public class WordDocumentParser implements DocumentParser {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                     "Word 解析失败: " + e.getMessage());
         }
+    }
+
+    private List<String> extractAndUploadImages(XWPFDocument document, String filename) {
+        List<String> urls = new ArrayList<>();
+        String prefix = "knowledge/" + filename.replaceAll("[^a-zA-Z0-9._-]", "_");
+        List<XWPFPictureData> pictures = document.getAllPictures();
+
+        for (int i = 0; i < pictures.size(); i++) {
+            XWPFPictureData pic = pictures.get(i);
+            byte[] data = pic.getData();
+            if (data.length < MIN_IMAGE_SIZE) continue;
+
+            try {
+                String ext = pic.suggestFileExtension();
+                String contentType = pic.getPackagePart().getContentType();
+                String objectName = MinioService.generateObjectName(prefix, "_" + i + "." + ext);
+                String url = minioService.uploadImage(data, objectName, contentType);
+                urls.add(url);
+            } catch (Exception e) {
+                log.warn("[Word Parser] failed to upload image {}", i, e);
+            }
+        }
+        return urls;
     }
 
     private List<ChunkResult> parseDocument(XWPFDocument document) {
@@ -170,7 +215,8 @@ public class WordDocumentParser implements DocumentParser {
         chunks.add(new ChunkResult(
                 title != null ? title : "未分类知识点",
                 tag != null ? tag : "算法基础",
-                body.toString()
+                body.toString(),
+                null
         ));
     }
 
@@ -192,6 +238,10 @@ public class WordDocumentParser implements DocumentParser {
             sb.append("content_type: 知识点\n");
             sb.append("tag: ").append(chunk.getTag()).append("\n");
             sb.append("title: ").append(chunk.getTitle()).append("\n");
+            if (chunk.getImageUrls() != null) {
+                sb.append("image_urls: ").append(chunk.getImageUrls()).append("\n");
+            }
+            sb.append("source_type: docx\n");
             sb.append("\n");
             sb.append(chunk.getBody().trim());
         }
@@ -204,5 +254,6 @@ public class WordDocumentParser implements DocumentParser {
         private String title;
         private String tag;
         private String body;
+        private String imageUrls;
     }
 }

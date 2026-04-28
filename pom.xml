@@ -154,6 +154,12 @@
             <artifactId>poi-ooxml</artifactId>
             <version>5.3.0</version>
         </dependency>
+        <!-- MinIO 对象存储 -->
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>8.5.14</version>
+        </dependency>
         <!-- Jetbrains 注解库 -->
         <dependency>
             <groupId>org.jetbrains</groupId>

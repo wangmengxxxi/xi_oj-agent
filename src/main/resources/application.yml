@@ -109,10 +109,23 @@ codesandbox:   # 第一级
 
 # Milvus 向量库（部署在虚拟机）
 milvus:
-  host: 192.168.26.132
+  host: 192.168.26.128
   port: 19530
+
+# MinIO 对象存储（知识库图片）
+minio:
+  endpoint: http://192.168.26.128:9000
+  access-key: minioadmin
+  secret-key: minioadmin
+  bucket: oj-knowledge-images
 
 # AI 模型配置（API Key 通过环境变量注入，禁止硬编码）
 ai:
   model:
     api-key: ${AI_API_KEY}   # 启动前需设置：export AI_API_KEY=sk-xxx
+
+# RAG 检索日志（DEBUG 级别可查看命中的 chunk 内容和相似度分数）
+logging:
+  level:
+    com.XI.xi_oj.ai.rag: DEBUG
+    dev.langchain4j: DEBUG

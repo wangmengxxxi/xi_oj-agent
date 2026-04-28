@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Message, Modal } from '@arco-design/web-vue'
-import { getAiConfig, updateAiConfig, rebuildQuestionVectors, importKnowledge } from '@/api/aiConfig'
+import { getAiConfig, updateAiConfig, rebuildQuestionVectors, importKnowledge, getImportStatus } from '@/api/aiConfig'
 import { listRateLimitRules, updateRateLimitRule } from '@/api/rateLimit'
 import type { RateLimitRule } from '@/api/rateLimit'
 
@@ -12,6 +12,10 @@ const saving = ref(false)
 const rebuilding = ref(false)
 const importing = ref(false)
 const importResult = ref('')
+const importTaskId = ref('')
+const selectedFile = ref<File | null>(null)
+const selectedFileName = ref('')
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const form = reactive({
   'ai.global.enable': 'false',
@@ -141,26 +145,93 @@ const EMBEDDING_OPTIONS = [
   { label: 'text-embedding-v2', value: 'text-embedding-v2' },
 ]
 
-async function handleKnowledgeImport(_fileList: any[], fileItem: any) {
+function handleFileSelect(_fileList: any[], fileItem: any) {
   const file = fileItem.file as File
   if (!file) return
+  selectedFile.value = file
+  selectedFileName.value = file.name
+  importResult.value = ''
+}
+
+function handleFileRemove() {
+  selectedFile.value = null
+  selectedFileName.value = ''
+  importResult.value = ''
+}
+
+async function handleStartImport() {
+  if (!selectedFile.value) {
+    Message.warning('请先选择文件')
+    return
+  }
   importing.value = true
   importResult.value = ''
+  importTaskId.value = ''
   try {
-    const res = await importKnowledge(file)
-    importResult.value = res.data.data ?? '导入完成'
-    Message.success(importResult.value)
+    const res = await importKnowledge(selectedFile.value)
+    const msg = res.data.data ?? '导入完成'
+    // 检查是否为异步任务
+    const taskIdMatch = msg.match(/任务ID:\s*(\w+)/)
+    if (taskIdMatch) {
+      importTaskId.value = taskIdMatch[1]
+      importResult.value = '大文件已提交异步导入，正在处理中...'
+      startPolling(taskIdMatch[1])
+    } else {
+      importResult.value = msg
+      Message.success(msg)
+      selectedFile.value = null
+      selectedFileName.value = ''
+      importing.value = false
+    }
   } catch (err: any) {
     importResult.value = ''
     Message.error(err?.message || '知识库导入失败')
-  } finally {
     importing.value = false
+  }
+}
+
+function startPolling(taskId: string) {
+  stopPolling()
+  pollTimer = setInterval(async () => {
+    try {
+      const res = await getImportStatus(taskId)
+      const status = res.data.data
+      if (!status) return
+      if (status.status === 'completed') {
+        importResult.value = status.message || '导入完成'
+        Message.success(importResult.value)
+        stopPolling()
+        importing.value = false
+        selectedFile.value = null
+        selectedFileName.value = ''
+      } else if (status.status === 'failed') {
+        importResult.value = status.message || '导入失败'
+        Message.error(importResult.value)
+        stopPolling()
+        importing.value = false
+      } else {
+        importResult.value = '正在处理中（' + status.status + '）...'
+      }
+    } catch {
+      // 轮询失败不中断
+    }
+  }, 3000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
 }
 
 onMounted(() => {
   loadConfig()
   loadTokenBucketRule()
+})
+
+onUnmounted(() => {
+  stopPolling()
 })
 </script>
 
@@ -308,22 +379,27 @@ onMounted(() => {
     <div class="config-section">
       <div class="section-title">知识库管理</div>
       <div class="knowledge-desc">
-        上传 Markdown 文件（.md），系统将自动解析内容并存入向量知识库，用于 RAG 检索增强。
+        上传知识文件（支持 .md / .pdf / .docx），系统将自动解析内容并存入向量知识库，用于 RAG 检索增强。
       </div>
       <div class="knowledge-upload">
         <a-upload
           :auto-upload="false"
-          accept=".md,.markdown"
+          accept=".md,.markdown,.pdf,.docx"
           :limit="1"
           :show-file-list="false"
-          @change="handleKnowledgeImport"
+          @change="handleFileSelect"
         >
           <template #upload-button>
-            <a-button :loading="importing">
-              {{ importing ? '导入中...' : '选择文件并导入' }}
-            </a-button>
+            <a-button :disabled="importing">选择文件</a-button>
           </template>
         </a-upload>
+        <div v-if="selectedFileName" class="selected-file">
+          <span class="file-name">{{ selectedFileName }}</span>
+          <a-button size="mini" type="text" status="danger" :disabled="importing" @click="handleFileRemove">删除</a-button>
+          <a-button type="primary" size="small" :loading="importing" @click="handleStartImport">
+            {{ importing ? '导入中...' : '开始导入' }}
+          </a-button>
+        </div>
         <div v-if="importResult" class="import-result">{{ importResult }}</div>
       </div>
     </div>
@@ -433,6 +509,22 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.selected-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-name {
+  font-size: 13px;
+  color: #333;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .import-result {

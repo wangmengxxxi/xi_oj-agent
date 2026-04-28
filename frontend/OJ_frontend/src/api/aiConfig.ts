@@ -15,5 +15,11 @@ export const importKnowledge = (file: File) => {
   formData.append('file', file)
   return request.post<BaseResponse<string>>('/admin/knowledge/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000,
   })
 }
+
+export const getImportStatus = (taskId: string) =>
+  request.get<BaseResponse<{ status: string; filename: string; message: string }>>(
+    `/admin/knowledge/import/status/${taskId}`
+  )

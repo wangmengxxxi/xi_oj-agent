@@ -22,4 +22,11 @@ defineProps<Props>()
 :deep(.md-editor-preview-wrapper) {
   padding: 0;
 }
+
+:deep(.md-editor-preview-wrapper img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 8px 0;
+}
 </style>
