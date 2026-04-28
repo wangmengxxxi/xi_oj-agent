@@ -43,8 +43,9 @@ spring:
   # 文件上传
   servlet:
     multipart:
-      # 大小限制
-      max-file-size: 10MB
+      # 大小限制（PDF 文件较大，需要 50MB）
+      max-file-size: 50MB
+      max-request-size: 50MB
 server:
   address: 0.0.0.0
   port: 8101

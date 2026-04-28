@@ -185,8 +185,8 @@ public class KnowledgeInitializer implements CommandLineRunner {
             return null;
         }
 
-        if (body.length() < 80 || body.length() > 600) {
-            log.warn("[Knowledge Init] block {} length={} is outside recommended range [80, 600]",
+        if (body.length() < 80 || body.length() > 1200) {
+            log.warn("[Knowledge Init] block {} length={} is outside recommended range [80, 1200]",
                     blockIndex, body.length());
         }
 

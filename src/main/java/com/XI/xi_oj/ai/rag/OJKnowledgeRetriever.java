@@ -55,24 +55,29 @@ public class OJKnowledgeRetriever {
     }
 
     private String doRetrieve(String query, int topK, double minScore) {
-        Embedding queryEmbedding = aiModelHolder.getEmbeddingModel().embed(query).content();
-        EmbeddingSearchRequest searchRequest = EmbeddingSearchRequest.builder()
-                .queryEmbedding(queryEmbedding)
-                .maxResults(topK)
-                .minScore(minScore)
-                .build();
+        try {
+            Embedding queryEmbedding = aiModelHolder.getEmbeddingModel().embed(query).content();
+            EmbeddingSearchRequest searchRequest = EmbeddingSearchRequest.builder()
+                    .queryEmbedding(queryEmbedding)
+                    .maxResults(topK)
+                    .minScore(minScore)
+                    .build();
 
-        EmbeddingSearchResult<TextSegment> searchResult = embeddingStore.search(searchRequest);
-        List<EmbeddingMatch<TextSegment>> matches = searchResult.matches();
+            EmbeddingSearchResult<TextSegment> searchResult = embeddingStore.search(searchRequest);
+            List<EmbeddingMatch<TextSegment>> matches = searchResult.matches();
 
-        String context = matches.stream()
-                .filter(match -> match.score() >= minScore)
-                .filter(match -> match.embedded() != null)
-                .map(EmbeddingMatch::embedded)
-                .map(TextSegment::text)
-                .collect(Collectors.joining("\n\n"));
+            String context = matches.stream()
+                    .filter(match -> match.score() >= minScore)
+                    .filter(match -> match.embedded() != null)
+                    .map(EmbeddingMatch::embedded)
+                    .map(TextSegment::text)
+                    .collect(Collectors.joining("\n\n"));
 
-        return context.isBlank() ? "无相关知识点" : context;
+            return context.isBlank() ? "无相关知识点" : context;
+        } catch (Exception e) {
+            log.warn("[RAG] 知识库检索失败，向量数据库可能不可用: {}", e.getMessage());
+            return "无相关知识点";
+        }
     }
 
     public List<Long> retrieveSimilarQuestions(Long questionId, String questionContent) {
@@ -104,26 +109,31 @@ public class OJKnowledgeRetriever {
     }
 
     private List<Long> doretrieveSimilarQuestions(Long questionId, String questionContent, String difficulty) {
-        Embedding queryEmbedding = aiModelHolder.getEmbeddingModel().embed(questionContent).content();
-        EmbeddingSearchRequest embeddingSearchRequest = EmbeddingSearchRequest.builder()
-                .queryEmbedding(queryEmbedding)
-                .maxResults(8)
-                .minScore(0.75)
-                .build();
-        return questionEmbeddingStore.search(embeddingSearchRequest)
-                .matches()
-                .stream()
-                .filter(match -> match.score() >= 0.75)
-                .filter(match -> match.embedded() != null)
-                .filter(match -> "题目".equals(match.embedded().metadata().getString("content_type")))
-                .filter(match -> difficulty == null || difficulty.equals(
-                        normalizeDifficulty(match.embedded().metadata().getString("difficulty"))))
-                .map(EmbeddingMatch::embedded)
-                .map(segment -> segment.metadata().getLong("question_id"))
-                .filter(id -> id != null)
-                .filter(id -> !id.equals(questionId))
-                .limit(4)
-                .collect(Collectors.toList());
+        try {
+            Embedding queryEmbedding = aiModelHolder.getEmbeddingModel().embed(questionContent).content();
+            EmbeddingSearchRequest embeddingSearchRequest = EmbeddingSearchRequest.builder()
+                    .queryEmbedding(queryEmbedding)
+                    .maxResults(8)
+                    .minScore(0.75)
+                    .build();
+            return questionEmbeddingStore.search(embeddingSearchRequest)
+                    .matches()
+                    .stream()
+                    .filter(match -> match.score() >= 0.75)
+                    .filter(match -> match.embedded() != null)
+                    .filter(match -> "题目".equals(match.embedded().metadata().getString("content_type")))
+                    .filter(match -> difficulty == null || difficulty.equals(
+                            normalizeDifficulty(match.embedded().metadata().getString("difficulty"))))
+                    .map(EmbeddingMatch::embedded)
+                    .map(segment -> segment.metadata().getLong("question_id"))
+                    .filter(id -> id != null)
+                    .filter(id -> !id.equals(questionId))
+                    .limit(4)
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("[RAG] 相似题目检索失败，向量数据库可能不可用: {}", e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     public String retrieveByType(String query, String contentTypes, int topK, double minScore) {
@@ -155,14 +165,19 @@ public class OJKnowledgeRetriever {
     }
 
     private List<EmbeddingMatch<TextSegment>> doretrieveByType(String query, int topK, double minScore) {
-        Embedding queryEmbedding = aiModelHolder.getEmbeddingModel().embed(query).content();
-        return embeddingStore.search(
-                EmbeddingSearchRequest.builder()
-                        .queryEmbedding(queryEmbedding)
-                        .maxResults(topK * 2)
-                        .minScore(minScore)
-                        .build()
-        ).matches();
+        try {
+            Embedding queryEmbedding = aiModelHolder.getEmbeddingModel().embed(query).content();
+            return embeddingStore.search(
+                    EmbeddingSearchRequest.builder()
+                            .queryEmbedding(queryEmbedding)
+                            .maxResults(topK * 2)
+                            .minScore(minScore)
+                            .build()
+            ).matches();
+        } catch (Exception e) {
+            log.warn("[RAG] 分类知识检索失败，向量数据库可能不可用: {}", e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     public void clearRagCache() {

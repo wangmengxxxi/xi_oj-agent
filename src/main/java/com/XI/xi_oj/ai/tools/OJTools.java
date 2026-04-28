@@ -219,11 +219,11 @@ public class OJTools {
         List<Long> similarIds = ojKnowledgeRetriever.retrieveSimilarQuestions(
                 questionId, content, question.getDifficulty());
         if (similarIds == null || similarIds.isEmpty()) {
-            return "未找到相似题目。";
+            return "题库中暂无与该题目相似的题目，可能是题目尚未入库或向量数据库暂时不可用。";
         }
         List<Question> questions = questionService.listByIds(similarIds);
         if (questions == null || questions.isEmpty()) {
-            return "未找到相似题目。";
+            return "题库中暂无与该题目相似的题目。";
         }
         StringBuilder sb = new StringBuilder("找到 " + questions.size() + " 道相似题目：\n");
         for (Question q : questions) {
@@ -347,6 +347,8 @@ public class OJTools {
                         sb.append(String.format("  - [%s](/view/question/%d) | 难度: %s\n", q.getTitle(), q.getId(), q.getDifficulty()));
                     }
                 }
+            } else {
+                sb.append("（题库中暂无相似题目）\n");
             }
         }
         if (hintLevel >= 2) {
