@@ -449,13 +449,16 @@ CREATE TABLE IF NOT EXISTS ai_wrong_question
 | tag | varchar | 标签/考点（如哈希表、动态规划） |
 | difficulty | varchar | 难度（已在 `question` 表中落地，建议值：easy / medium / hard） |
 | content_type | varchar | 内容类型（题目/题解/知识点/代码模板/错题分析） |
+| image_urls | varchar | 关联图片 URL（可选，逗号分隔多图，来自 PDF/Word 解析后上传 MinIO） |
+| source_type | varchar | 来源格式（可选，md / pdf / docx） |
 
 #### 4.3.2 存储内容范围
 仅存储RAG检索所需的核心内容，避免无效数据引入噪声：
 1. **题目核心信息**：title标题、content题干、tags标签（**不存标准答案，避免泄题风险**）；
 2. **题解与知识点**：分步骤解题思路、算法考点讲解、代码模板、常见错误分析；
 3. **相似题关联数据**：题目标签、考点、难度匹配信息；
-4. **错题分析数据**：典型错误代码、错误原因分析、修正思路。
+4. **错题分析数据**：典型错误代码、错误原因分析、修正思路；
+5. **PDF/Word 导入内容**：通过 `PdfDocumentParser` / `WordDocumentParser` 自动解析的知识块，按章节标题智能切片，图片上传 MinIO 后 URL 存入 `image_urls` metadata 字段。
 
 ## 五、核心功能模块详细设计
 ### 5.1 AIGC核心能力底座（RAG+Agent）
@@ -475,8 +478,11 @@ flowchart TD
     C --> D[向量库检索]
     D --> E[相似度过滤（阈值≥0.7）]
     E --> F[content_type 元数据二次过滤]
-    F --> G[返回给Agent的精准上下文]
+    F --> G[ImageAwareContentRetriever 图片感知]
+    G --> H[返回给Agent的精准上下文（含图片引用）]
 ```
+
+> **图片感知检索（2026-04-28 落地）**：`oj_knowledge` 集合的 `EmbeddingStoreContentRetriever` 被 `ImageAwareContentRetriever` 装饰器包装。当检索到的 chunk 包含 `image_urls` metadata 时，自动在上下文中追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用（`![knowledge-image](url)`），使 LLM 可以在回答中直接引用知识库配图。System Prompt 中配套增加了【图片引用规范】，要求 LLM 原样保留图片链接，禁止修改或编造图片 URL。
 
 **核心代码实现**：
 ```java
@@ -574,11 +580,14 @@ public class OJKnowledgeRetriever {
 
 #### 5.1.1.1 RAG 优化方向一：知识点分块规范（200-400字/条）
 
-> **当前项目落地状态（2026-04-20）**
+> **当前项目落地状态（2026-04-28）**
 > - 文档层已明确 `knowledge/*.md` 的 `---` 分块规范（200-400字/条）与质检标准；
 > - 仓库已落地 `KnowledgeInitializer`、`KnowledgeImportController`、`QuestionVectorSyncJob`，知识库初始化、管理员手动导入、题目向量定时同步三条链路均已具备真实代码；
-> - `KnowledgeInitializer.parseAndStore(...)` 已支持 `---` 分块解析、元数据校验、异常条目跳过、长度告警、导入后清理 RAG 缓存；
-> - 当前仍建议后续继续增强“超长自动拆分、过短自动合并、导入失败条目落盘报告”三项能力，作为知识库运维优化项。
+> - `KnowledgeInitializer.parseAndStore(...)` 已支持 `---` 分块解析、元数据校验（含 `image_urls`、`source_type` 新字段）、异常条目跳过、长度告警、导入后清理 RAG 缓存；
+> - `KnowledgeImportController` 已扩展支持 `.md` / `.pdf` / `.docx` 三种格式，通过 `DocumentParser` 策略模式路由，超过 10MB 的大文件走 `KnowledgeImportAsyncService` 异步处理；
+> - PDF/Word 解析器（`PdfDocumentParser`、`WordDocumentParser`）已实现文本提取 + 按章节标题智能切片 + 图片提取上传 MinIO，图片 URL 以逗号分隔存入 chunk 的 `image_urls` metadata；
+> - RAG 检索侧已通过 `ImageAwareContentRetriever` 装饰器实现图片感知，检索到含图片的 chunk 时自动在上下文中追加 markdown 图片引用；
+> - 防幻觉三层防线已落地：Prompt 硬约束 + 双集合 RAG + `LinkValidationFilter` 输出层链接校验。
 > **原则**：每条知识点独立、完整，过长则拆分，过短则合并。分块质量是比混合检索更有效的精度提升手段。
 
 **知识文件分块规范（实操指南）**：
@@ -3249,9 +3258,9 @@ AI_GLOBAL_TOKEN_BUCKET("ai:global:token_bucket")
 |------|---------|---------|---------|
 | 启动自动初始化 | 应用启动时 `CommandLineRunner` | 算法知识点、错题分析（classpath 文件） | 首次启动时检测到向量库为空则自动导入 |
 | 定时同步任务 | `@Scheduled` 凌晨定时 | MySQL `question` 表题目数据 | 每天凌晨2点增量同步新增/修改题目 |
-| 管理员文件上传 | POST 接口上传 `.md` 文件 | 人工编写的知识点、题解、错题分析 | 管理员随时补充，无需重启服务 |
+| 管理员文件上传 | POST 接口上传 `.md` / `.pdf` / `.docx` 文件 | 人工编写的知识点、题解、错题分析，以及 PDF/Word 格式的算法教材 | 管理员随时补充，无需重启服务 |
 
-知识点文件统一放置于 `src/main/resources/knowledge/`，格式为 Markdown，以 `---` 分隔每条条目，前3行为元数据，其余为正文内容：
+知识点文件统一放置于 `src/main/resources/knowledge/`，格式为 Markdown，以 `---` 分隔每条条目，前3行为元数据，其余为正文内容。PDF/Word 文件通过 `DocumentParser` 解析器自动转换为相同的 markdown block 格式：
 ```
 content_type: 知识点
 tag: 二分查找
@@ -3269,9 +3278,10 @@ title: 二分查找-WA-边界处理错误
 
 #### 5.10.2 核心代码实现
 
-**当前仓库落地状态（2026-04-22）**：
-- `KnowledgeInitializer` 已实现，并挂在应用启动链路 `CommandLineRunner`；
-- `KnowledgeImportController` 已实现管理员上传导入接口 `/admin/knowledge/import`；
+**当前仓库落地状态（2026-04-28）**：
+- `KnowledgeInitializer` 已实现，并挂在应用启动链路 `CommandLineRunner`，支持 `image_urls`、`source_type` 新 metadata 字段；
+- `KnowledgeImportController` 已实现管理员上传导入接口 `/admin/knowledge/import`，支持 `.md` / `.pdf` / `.docx` 三种格式，超过 10MB 走异步处理；
+- `PdfDocumentParser` + `WordDocumentParser` 已实现文档解析 + 图片提取上传 MinIO；
 - `QuestionVectorSyncService + QuestionVectorSyncJob` 已实现题目向量全量重建与定时同步；
 - 当前项目已拆分双 collection：`oj_knowledge`（知识库）与 `oj_question`（题目向量），二者职责必须分开。
 
@@ -3435,20 +3445,22 @@ public class QuestionVectorSyncJob {
 }
 
 // ─────────────────────────────────────────────
-// 策略三：管理员上传 Markdown 文件导入 knowledge collection（随时补充知识点）
+// 策略三：管理员上传文件导入 knowledge collection（支持 .md / .pdf / .docx）
 // ─────────────────────────────────────────────
 @RestController
 @RequestMapping("/admin/knowledge")
 @Slf4j
 public class KnowledgeImportController {
 
+    private static final long ASYNC_THRESHOLD = 10 * 1024 * 1024; // 10MB
+
     @Resource
     private KnowledgeInitializer knowledgeInitializer;
+    @Resource
+    private List<DocumentParser> documentParsers;
+    @Resource
+    private KnowledgeImportAsyncService importAsyncService;
 
-    /**
-     * 管理员上传 .md 文件，批量导入知识点到向量库
-     * 文件格式与 classpath 知识点文件一致（--- 分隔，前3行元数据）
-     */
     @PostMapping("/import")
     @AuthCheck(mustRole = "admin")
     public BaseResponse<String> importKnowledge(
@@ -3456,18 +3468,48 @@ public class KnowledgeImportController {
         if (file == null || file.isEmpty()) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "文件不能为空");
         }
-        String extension = StringUtils.getFilenameExtension(file.getOriginalFilename());
-        if (extension == null || !("md".equalsIgnoreCase(extension) || "markdown".equalsIgnoreCase(extension))) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "仅支持导入 .md / .markdown 文件");
+        String filename = file.getOriginalFilename();
+        String extension = StringUtils.getFilenameExtension(filename);
+
+        // Markdown 走原有逻辑
+        if ("md".equalsIgnoreCase(extension) || "markdown".equalsIgnoreCase(extension)) {
+            String content = new String(file.getBytes(), StandardCharsets.UTF_8);
+            int count = knowledgeInitializer.parseAndStore(content);
+            knowledgeInitializer.validateImportedCount(count);
+            return ResultUtils.success("成功导入 " + count + " 条知识条目");
         }
-        String content = new String(file.getBytes(), StandardCharsets.UTF_8);
-        int importedCount = knowledgeInitializer.parseAndStore(content);
-        if (importedCount <= 0) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "未解析到可导入的知识条目");
+
+        // PDF / Word 走文档解析器（策略模式路由）
+        DocumentParser parser = documentParsers.stream()
+                .filter(p -> p.supports(extension))
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.PARAMS_ERROR,
+                        "不支持的文件格式: " + extension + "，仅支持 .md / .pdf / .docx"));
+
+        // 大文件走异步处理（>10MB）
+        if (file.getSize() > ASYNC_THRESHOLD) {
+            String taskId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+            importAsyncService.importAsync(taskId, file.getBytes(), filename, parser);
+            return ResultUtils.success("文件较大，已提交异步导入，任务ID: " + taskId);
         }
-        log.info("[Knowledge Import] admin imported file={}, count={}",
-                file.getOriginalFilename(), importedCount);
-        return ResultUtils.success("成功导入 " + importedCount + " 条知识条目");
+
+        // 同步解析（含图片提取上传 MinIO）
+        ParseResult result = parser.parseWithImages(file.getInputStream(), filename);
+        int count = knowledgeInitializer.parseAndStore(result.markdownBlocks());
+        knowledgeInitializer.validateImportedCount(count);
+        String imageInfo = result.imageUrls().isEmpty() ? "" :
+                "，提取 " + result.imageUrls().size() + " 张图片";
+        return ResultUtils.success("成功导入 " + count + " 条知识条目" + imageInfo);
+    }
+
+    @GetMapping("/import/status/{taskId}")
+    @AuthCheck(mustRole = "admin")
+    public BaseResponse<ImportTaskStatus> getImportStatus(@PathVariable String taskId) {
+        ImportTaskStatus status = importAsyncService.getTaskStatus(taskId);
+        if (status == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "任务不存在: " + taskId);
+        }
+        return ResultUtils.success(status);
     }
 }
 ```
@@ -3485,7 +3527,8 @@ src/main/resources/
 
 | 接口地址 | 请求方式 | 接口描述 |
 |---------|---------|---------|
-| /admin/knowledge/import | POST | 上传 .md 文件批量导入知识点 |
+| /admin/knowledge/import | POST | 上传 .md / .pdf / .docx 文件批量导入知识点（PDF/Word 自动解析切片，图片上传 MinIO） |
+| /admin/knowledge/import/status/{taskId} | GET | 查询大文件异步导入任务进度（超过 10MB 的文件走异步） |
 
 ## 六、开发与落地实施计划
 采用分阶段落地策略，先完成核心AIGC能力，再完善基础功能，最后优化体验，保证每阶段都有可交付的成果。
@@ -3537,7 +3580,7 @@ flowchart LR
 | 风险场景 | 风险描述 | 应对方案 |
 |----------|----------|----------|
 | 大模型API异常 | API调用超时、限流、服务不可用 | 1. 实现多模型降级切换，主模型异常时自动切换备用模型；2. 接口超时重试机制；3. 高频问题缓存，减少API调用 |
-| AI回答幻觉 | AI生成错误的解题思路、代码分析、错题分析 | 1. 强化RAG检索，所有回答必须基于检索到的知识点；2. Prompt中增加约束，禁止编造题目、考点；3. 增加回答结果校验，与题目信息、判题结果交叉验证 |
+| AI回答幻觉 | AI生成错误的解题思路、编造不存在的题目/链接、虚构图片URL | **已落地三层防线**：1. **Prompt 层**：System Prompt 中 6 条硬约束——禁止编造题目名称/ID/链接，推荐题目必须先调用 `searchQuestions` 工具，搜不到则回复"平台暂无相关练习题"；图片引用规范要求原样保留 RAG 检索到的图片链接，禁止修改或编造图片 URL；2. **架构层**：`DefaultQueryRouter` 双集合 RAG（`oj_knowledge` + `oj_question`），`oj_question` 向量文本内嵌真实题目 ID 和链接（`/view/question/{id}`），`ImageAwareContentRetriever` 装饰器自动携带图片引用；3. **输出层**：`LinkValidationFilter` 后置过滤器，正则匹配回答中所有 `/view/question/{id}` 链接，逐一查库验证，不存在的链接自动剥离（流式场景下缓冲处理避免链接被截断） |
 | 并发量过高 | 大量用户同时调用AI接口，导致服务压力过大 | 1. 用户级别的调用次数限流；2. AI任务异步处理，避免阻塞主线程；3. 接口熔断降级，服务压力过大时关闭非核心AI功能 |
 | 向量库检索性能下降 | 随着题目数据增多，检索耗时增加 | 1. Milvus开启索引优化，提升检索速度；2. 按考点、难度对向量库分库分表；3. 高频检索结果缓存到Redis |
 

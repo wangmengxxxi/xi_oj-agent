@@ -3,14 +3,15 @@ package com.XI.xi_oj.ai.agent;
 import com.XI.xi_oj.ai.event.AiConfigChangedEvent;
 import com.XI.xi_oj.ai.tools.OJTools;
 import com.XI.xi_oj.service.AiConfigService;
-import dev.langchain4j.community.model.dashscope.QwenChatModel;
+import com.XI.xi_oj.utils.AiEncryptUtil;
 import dev.langchain4j.community.model.dashscope.QwenEmbeddingModel;
-import dev.langchain4j.community.model.dashscope.QwenStreamingChatModel;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import com.XI.xi_oj.ai.rag.ImageAwareContentRetriever;
 import dev.langchain4j.rag.DefaultRetrievalAugmentor;
 import dev.langchain4j.rag.RetrievalAugmentor;
@@ -37,10 +38,10 @@ import java.util.Set;
 @Slf4j
 public class AiModelHolder {
 
-    // 定义模型名称的配置键集合
-    private static final Set<String> MODEL_NAME_KEYS = Set.of("ai.model.name");
-    // 定义嵌入模型名称的配置键集合
-    private static final Set<String> EMBEDDING_NAME_KEYS = Set.of("ai.model.embedding_name");
+    private static final Set<String> MODEL_NAME_KEYS = Set.of(
+            "ai.model.name", "ai.provider", "ai.provider.api_key_encrypted", "ai.model.base_url");
+    private static final Set<String> EMBEDDING_NAME_KEYS = Set.of(
+            "ai.model.embedding_name", "ai.embedding.api_key_encrypted");
     // 定义RAG（检索增强生成）相关的配置键集合
     private static final Set<String> RAG_KEYS = Set.of("ai.rag.top_k", "ai.rag.similarity_threshold");
 
@@ -55,9 +56,8 @@ public class AiModelHolder {
     // 聊天记忆存储
     private final ChatMemoryStore chatMemoryStore;
 
-    // 从配置文件中注入API密钥
-    @Value("${ai.model.api-key}")
-    private String apiKey;
+    @Value("${ai.encrypt.key}")
+    private String encryptKey;
 
 
 
@@ -94,6 +94,11 @@ public class AiModelHolder {
      */
     @PostConstruct
     public void init() {
+        String apiKey = getDecryptedApiKey("ai.provider.api_key_encrypted");
+        if (apiKey.isEmpty()) {
+            log.warn("[AiModelHolder] API Key 未配置，跳过模型初始化。请在管理后台配置供应商密钥后自动生效");
+            return;
+        }
         this.chatModel = buildChatModel();
         this.streamingChatModel = buildStreamingChatModel();
         this.embeddingModel = buildEmbeddingModel();
@@ -111,28 +116,41 @@ public class AiModelHolder {
     @EventListener
     public void onConfigChanged(AiConfigChangedEvent event) {
         String key = event.getConfigKey();
+        String apiKey = getDecryptedApiKey("ai.provider.api_key_encrypted");
 
-        // 如果是模型名称相关配置变更
         if (MODEL_NAME_KEYS.contains(key)) {
+            if (apiKey.isEmpty()) {
+                log.warn("[AiModelHolder] API Key 仍为空，跳过模型重建");
+                return;
+            }
             this.chatModel = buildChatModel();
             this.streamingChatModel = buildStreamingChatModel();
             this.ojStreamingService = buildStreamingService(this.streamingChatModel);
+            if (this.embeddingModel == null) {
+                this.embeddingModel = buildEmbeddingModel();
+            }
             this.ojChatAgent = buildChatAgent();
             this.ojQuestionParseAgent = buildQuestionParseAgent();
             log.info("[AiModelHolder] chat models and all agents rebuilt for config: {}", key);
 
-        // 如果是嵌入模型名称相关配置变更
         } else if (EMBEDDING_NAME_KEYS.contains(key)) {
+            if (apiKey.isEmpty()) {
+                log.warn("[AiModelHolder] API Key 仍为空，跳过 embedding 重建");
+                return;
+            }
             this.embeddingModel = buildEmbeddingModel();
-            this.ojChatAgent = buildChatAgent();
-            this.ojQuestionParseAgent = buildQuestionParseAgent();
+            if (this.chatModel != null) {
+                this.ojChatAgent = buildChatAgent();
+                this.ojQuestionParseAgent = buildQuestionParseAgent();
+            }
             log.info("[AiModelHolder] embedding model and agents rebuilt for config: {}", key);
 
-        // 如果是RAG相关配置变更
         } else if (RAG_KEYS.contains(key)) {
-            this.ojChatAgent = buildChatAgent();
-            this.ojQuestionParseAgent = buildQuestionParseAgent();
-            log.info("[AiModelHolder] agents rebuilt for RAG config: {}", key);
+            if (this.chatModel != null && this.embeddingModel != null) {
+                this.ojChatAgent = buildChatAgent();
+                this.ojQuestionParseAgent = buildQuestionParseAgent();
+                log.info("[AiModelHolder] agents rebuilt for RAG config: {}", key);
+            }
         }
     }
 
@@ -188,44 +206,55 @@ public class AiModelHolder {
 
     // ── builders ──
 
-    /**
-     * 构建聊天语言模型
-     * @return ChatLanguageModel 构建好的聊天语言模型
-     */
     private ChatModel buildChatModel() {
         String modelName = aiConfigService.getConfigValue("ai.model.name");
-        return QwenChatModel.builder()
+        String baseUrl = aiConfigService.getConfigValue("ai.model.base_url");
+        String apiKey = getDecryptedApiKey("ai.provider.api_key_encrypted");
+        return OpenAiChatModel.builder()
                 .apiKey(apiKey)
+                .baseUrl(baseUrl)
                 .modelName(modelName)
-                .temperature(0.2f)
+                .temperature(0.2)
                 .maxTokens(4096)
                 .build();
     }
 
-    /**
-     * 构建流式聊天语言模型
-     * @return StreamingChatLanguageModel 构建好的流式聊天语言模型
-     */
     private StreamingChatModel buildStreamingChatModel() {
         String modelName = aiConfigService.getConfigValue("ai.model.name");
-        return QwenStreamingChatModel.builder()
+        String baseUrl = aiConfigService.getConfigValue("ai.model.base_url");
+        String apiKey = getDecryptedApiKey("ai.provider.api_key_encrypted");
+        return OpenAiStreamingChatModel.builder()
                 .apiKey(apiKey)
+                .baseUrl(baseUrl)
                 .modelName(modelName)
-                .temperature(0.2f)
+                .temperature(0.2)
                 .maxTokens(4096)
                 .build();
     }
 
-    /**
-     * 构建嵌入模型
-     * @return EmbeddingModel 构建好的嵌入模型
-     */
     private EmbeddingModel buildEmbeddingModel() {
         String embeddingName = aiConfigService.getConfigValue("ai.model.embedding_name");
+        String apiKey = getDecryptedApiKey("ai.embedding.api_key_encrypted");
+        if (apiKey == null || apiKey.isEmpty()) {
+            apiKey = getDecryptedApiKey("ai.provider.api_key_encrypted");
+        }
         return QwenEmbeddingModel.builder()
                 .apiKey(apiKey)
                 .modelName(embeddingName)
                 .build();
+    }
+
+    private String getDecryptedApiKey(String configKey) {
+        String encrypted = aiConfigService.getConfigValue(configKey);
+        if (encrypted == null || encrypted.isEmpty()) {
+            return "";
+        }
+        try {
+            return AiEncryptUtil.decrypt(encryptKey, encrypted);
+        } catch (Exception e) {
+            log.error("[AiModelHolder] failed to decrypt {}", configKey, e);
+            return "";
+        }
     }
 
     /**

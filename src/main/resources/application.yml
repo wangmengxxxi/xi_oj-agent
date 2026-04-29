@@ -119,10 +119,10 @@ minio:
   secret-key: minioadmin
   bucket: oj-knowledge-images
 
-# AI 模型配置（API Key 通过环境变量注入，禁止硬编码）
+# AI 配置（AES 密钥用于加解密数据库中的 API Key）
 ai:
-  model:
-    api-key: ${AI_API_KEY}   # 启动前需设置：export AI_API_KEY=sk-xxx
+  encrypt:
+    key: ${AI_ENCRYPT_KEY}   # 启动前需设置：export AI_ENCRYPT_KEY=（任意16字符字符串）
 
 # RAG 检索日志（DEBUG 级别可查看命中的 chunk 内容和相似度分数）
 logging:

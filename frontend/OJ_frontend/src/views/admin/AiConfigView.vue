@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Message, Modal } from '@arco-design/web-vue'
-import { getAiConfig, updateAiConfig, rebuildQuestionVectors, importKnowledge, getImportStatus } from '@/api/aiConfig'
+import {
+  getAiConfig,
+  updateAiConfig,
+  rebuildQuestionVectors,
+  importKnowledge,
+  getImportStatus,
+  testProviderConnection,
+} from '@/api/aiConfig'
 import { listRateLimitRules, updateRateLimitRule } from '@/api/rateLimit'
 import type { RateLimitRule } from '@/api/rateLimit'
+import { AI_PROVIDERS } from '@/constants/aiProviders'
 
 const router = useRouter()
 const loading = ref(false)
@@ -17,13 +25,88 @@ const selectedFile = ref<File | null>(null)
 const selectedFileName = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+// 供应商配置
+const providerSaving = ref(false)
+const providerTesting = ref(false)
+const selectedProvider = ref('dashscope')
+const providerApiKey = ref('')
+const providerModelName = ref('')
+const providerBaseUrl = ref('')
+const embeddingApiKey = ref('')
+
+const currentProvider = computed(() =>
+  AI_PROVIDERS.find((p) => p.id === selectedProvider.value)
+)
+
+const modelOptions = computed(() =>
+  currentProvider.value?.models.map((m) => ({ label: m, value: m })) ?? []
+)
+
+function onProviderSelect(providerId: string) {
+  selectedProvider.value = providerId
+  const provider = AI_PROVIDERS.find((p) => p.id === providerId)
+  if (provider) {
+    providerBaseUrl.value = provider.baseUrl
+    providerModelName.value = provider.models[0] ?? ''
+  }
+  providerApiKey.value = ''
+}
+
+async function handleSaveProvider() {
+  if (!providerApiKey.value && !providerApiKey.value.startsWith('****')) {
+    // 如果是脱敏值（未修改），允许跳过
+  }
+  providerSaving.value = true
+  try {
+    await updateAiConfig({ configKey: 'ai.provider', configValue: selectedProvider.value })
+    await updateAiConfig({ configKey: 'ai.model.base_url', configValue: providerBaseUrl.value })
+    await updateAiConfig({ configKey: 'ai.model.name', configValue: providerModelName.value })
+    if (providerApiKey.value && !providerApiKey.value.startsWith('****')) {
+      await updateAiConfig({
+        configKey: 'ai.provider.api_key_encrypted',
+        configValue: providerApiKey.value,
+      })
+    }
+    if (embeddingApiKey.value && !embeddingApiKey.value.startsWith('****')) {
+      await updateAiConfig({
+        configKey: 'ai.embedding.api_key_encrypted',
+        configValue: embeddingApiKey.value,
+      })
+    }
+    Message.success('供应商配置保存成功，模型已热更新')
+  } catch (err: any) {
+    Message.error(err?.message || '保存失败')
+  } finally {
+    providerSaving.value = false
+  }
+}
+
+async function handleTestConnection() {
+  const key = providerApiKey.value
+  if (!key || key.startsWith('****')) {
+    Message.warning('请先输入 API 密钥')
+    return
+  }
+  providerTesting.value = true
+  try {
+    const res = await testProviderConnection({
+      apiKey: key,
+      baseUrl: providerBaseUrl.value,
+      modelName: providerModelName.value,
+    })
+    Message.success(res.data.data ?? '连接成功')
+  } catch (err: any) {
+    Message.error(err?.message || '连接测试失败')
+  } finally {
+    providerTesting.value = false
+  }
+}
+
 const form = reactive({
   'ai.global.enable': 'false',
-  'ai.model.name': '',
-  'ai.model.base_url': '',
   'ai.model.embedding_name': '',
-  'ai.rag.top_k': '',
-  'ai.rag.similarity_threshold': '',
+  'ai.rag.top_k': '' as string | number,
+  'ai.rag.similarity_threshold': '' as string | number,
   'ai.prompt.chat_system': '',
   'ai.prompt.code_analysis': '',
   'ai.prompt.wrong_analysis': '',
@@ -95,6 +178,14 @@ async function loadConfig() {
         form[key] = data[key]
       }
     }
+    // a-input-number 需要 number 类型才能正确显示
+    if (form['ai.rag.top_k']) form['ai.rag.top_k'] = Number(form['ai.rag.top_k'])
+    if (form['ai.rag.similarity_threshold']) form['ai.rag.similarity_threshold'] = Number(form['ai.rag.similarity_threshold'])
+    if (data['ai.provider']) selectedProvider.value = data['ai.provider']
+    if (data['ai.model.name']) providerModelName.value = data['ai.model.name']
+    if (data['ai.model.base_url']) providerBaseUrl.value = data['ai.model.base_url']
+    if (data['ai.provider.api_key_encrypted']) providerApiKey.value = data['ai.provider.api_key_encrypted']
+    if (data['ai.embedding.api_key_encrypted']) embeddingApiKey.value = data['ai.embedding.api_key_encrypted']
   } catch (err: any) {
     Message.error(err?.message || '加载配置失败')
   } finally {
@@ -133,12 +224,6 @@ function handleRebuild() {
     },
   })
 }
-
-const MODEL_OPTIONS = [
-  { label: 'qwen-turbo', value: 'qwen-turbo' },
-  { label: 'qwen-plus', value: 'qwen-plus' },
-  { label: 'qwen-max', value: 'qwen-max' },
-]
 
 const EMBEDDING_OPTIONS = [
   { label: 'text-embedding-v3', value: 'text-embedding-v3' },
@@ -305,35 +390,94 @@ onUnmounted(() => {
           </a-spin>
         </div>
 
-        <!-- 模型配置 -->
+        <!-- AI 供应商配置 -->
         <div class="config-section">
-          <div class="section-title">大模型配置</div>
-          <a-form-item label="聊天模型名称">
-            <a-select v-model="form['ai.model.name']" allow-search style="width: 100%">
+          <div class="section-title">AI 供应商配置</div>
+          <div class="provider-grid">
+            <div
+              v-for="provider in AI_PROVIDERS"
+              :key="provider.id"
+              class="provider-card"
+              :class="{ active: selectedProvider === provider.id }"
+              @click="onProviderSelect(provider.id)"
+            >
+              <div class="provider-logo" :style="{ background: provider.color }">
+                {{ provider.initial }}
+              </div>
+              <div class="provider-name">{{ provider.name }}</div>
+            </div>
+          </div>
+
+          <a-form-item label="API 密钥" style="margin-top: 16px">
+            <div class="api-key-row">
+              <a-input-password
+                v-model="providerApiKey"
+                placeholder="输入该供应商的 API Key"
+                allow-clear
+                style="flex: 1"
+              />
+              <a-button
+                :loading="providerTesting"
+                @click="handleTestConnection"
+              >
+                测试连接
+              </a-button>
+            </div>
+          </a-form-item>
+
+          <a-form-item label="聊天模型">
+            <a-select
+              v-model="providerModelName"
+              allow-create
+              allow-search
+              placeholder="选择或输入模型名称"
+              style="width: 100%"
+            >
               <a-option
-                v-for="opt in MODEL_OPTIONS"
+                v-for="opt in modelOptions"
                 :key="opt.value"
                 :value="opt.value"
               >
                 {{ opt.label }}
               </a-option>
             </a-select>
+            <div class="field-hint">可从预设列表选择，也可直接输入自定义模型名</div>
           </a-form-item>
-          <a-form-item label="嵌入模型名称">
-            <a-select v-model="form['ai.model.embedding_name']" allow-search style="width: 100%">
-              <a-option
-                v-for="opt in EMBEDDING_OPTIONS"
-                :key="opt.value"
-                :value="opt.value"
-              >
-                {{ opt.label }}
-              </a-option>
-            </a-select>
-            <div class="field-hint">修改嵌入模型后需重新向量化全量数据</div>
-          </a-form-item>
+
           <a-form-item label="API 端点">
-            <a-input v-model="form['ai.model.base_url']" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+            <a-input v-model="providerBaseUrl" placeholder="选择供应商后自动填充" />
+            <div class="field-hint">选择供应商后自动填充，如有自定义端点可手动修改</div>
           </a-form-item>
+
+          <div class="embed-section">
+            <div class="embed-title">嵌入模型配置</div>
+            <a-form-item label="嵌入模型名称">
+              <a-select v-model="form['ai.model.embedding_name']" allow-search allow-create style="width: 100%">
+                <a-option
+                  v-for="opt in EMBEDDING_OPTIONS"
+                  :key="opt.value"
+                  :value="opt.value"
+                >
+                  {{ opt.label }}
+                </a-option>
+              </a-select>
+              <div class="field-hint">修改嵌入模型后需重新向量化全量数据</div>
+            </a-form-item>
+            <a-form-item label="嵌入模型 API 密钥（可选）">
+              <a-input-password
+                v-model="embeddingApiKey"
+                placeholder="留空则使用聊天模型的 API 密钥"
+                allow-clear
+              />
+              <div class="field-hint">如果嵌入模型使用不同供应商，在此输入对应密钥</div>
+            </a-form-item>
+          </div>
+
+          <div style="margin-top: 16px">
+            <a-button type="primary" :loading="providerSaving" @click="handleSaveProvider">
+              保存供应商配置
+            </a-button>
+          </div>
         </div>
 
         <!-- RAG 配置 -->
@@ -482,6 +626,70 @@ onUnmounted(() => {
 .action-bar {
   display: flex;
   gap: 12px;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px;
+  border: 2px solid #f0f0f0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.provider-card:hover {
+  border-color: #c0c0c0;
+}
+
+.provider-card.active {
+  border-color: #165dff;
+  background: #f2f3ff;
+}
+
+.provider-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.provider-name {
+  font-size: 12px;
+  color: #333;
+  text-align: center;
+}
+
+.api-key-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.embed-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed #e8e8e8;
+}
+
+.embed-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #595959;
+  margin-bottom: 12px;
 }
 
 .nav-link-bar {

@@ -7,6 +7,12 @@ export const getAiConfig = () =>
 export const updateAiConfig = (data: AiConfigUpdateRequest) =>
   request.post<BaseResponse<string>>('/admin/ai/config', data)
 
+export const testProviderConnection = (data: {
+  apiKey: string
+  baseUrl: string
+  modelName: string
+}) => request.post<BaseResponse<string>>('/admin/ai/provider/test', data)
+
 export const rebuildQuestionVectors = () =>
   request.post<BaseResponse<string>>('/admin/ai/question-vector/rebuild')
 

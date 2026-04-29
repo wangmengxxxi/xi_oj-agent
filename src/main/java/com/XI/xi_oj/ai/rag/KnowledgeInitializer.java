@@ -57,6 +57,10 @@ public class KnowledgeInitializer implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
+        if (aiModelHolder.getEmbeddingModel() == null) {
+            log.warn("[Knowledge Init] embedding model not available (API Key not configured), skip bootstrap import");
+            return;
+        }
         if (hasKnowledgeData()) {
             log.info("[Knowledge Init] knowledge collection already has data, skip bootstrap import");
             return;

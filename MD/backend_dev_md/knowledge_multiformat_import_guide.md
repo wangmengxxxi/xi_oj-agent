@@ -3,6 +3,13 @@
 更新时间：2026-04-28
 前置依赖：已完成 RAG 知识库基础模块（参见 `aigc_engineering_implementation_guide.md` 第 6 章）
 
+> **当前落地状态（2026-04-28）**
+> 1. 本方案所有核心功能已在仓库中落地实现，包括 PDF 解析器（`PdfDocumentParser`）、Word 解析器（`WordDocumentParser`）、MinIO 图片存储（`MinioService`）、Controller 多格式路由 + 大文件异步处理（`KnowledgeImportController` + `KnowledgeImportAsyncService`）；
+> 2. `DocumentParser` 接口已扩展 `parseWithImages()` 方法，返回 `ParseResult(markdownBlocks, imageUrls)` record，支持图片提取链路；
+> 3. `KnowledgeInitializer.parseBlock()` 已适配 `image_urls`（逗号分隔多图）和 `source_type` 新 metadata 字段，`buildSearchableText()` 会将 `has_images: true` 和 `image_urls` 写入可检索文本；
+> 4. RAG 检索侧已通过 `ImageAwareContentRetriever` 装饰器实现图片感知：检索到含 `image_urls` 的 chunk 时，自动在上下文中追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用，LLM 可直接在回答中保留图片链接；
+> 5. System Prompt 中已增加【图片引用规范】，要求 LLM 原样保留 RAG 检索到的图片链接，禁止修改或编造图片 URL。
+
 ---
 
 ## 〇、背景与目标
@@ -202,8 +209,21 @@ public class MinioService {
 
 ```java
 public interface DocumentParser {
+
+    /** 解析文档，输出 markdown block 格式字符串（可直接传入 KnowledgeInitializer.parseAndStore） */
     String parse(InputStream inputStream, String filename);
+
     boolean supports(String extension);
+
+    /**
+     * 解析文档并提取图片，返回 markdown blocks + 图片 URL 列表。
+     * 默认实现不提取图片，子类可 override。
+     */
+    default ParseResult parseWithImages(InputStream inputStream, String filename) {
+        return new ParseResult(parse(inputStream, filename), Collections.emptyList());
+    }
+
+    record ParseResult(String markdownBlocks, List<String> imageUrls) {}
 }
 ```
 
@@ -608,7 +628,7 @@ private List<String> extractAndUploadImages(
 
 ### 7.1 修改 KnowledgeImportController
 
-在现有 Controller 基础上扩展，支持 `.md` / `.pdf` / `.docx` 三种格式：
+在现有 Controller 基础上扩展，支持 `.md` / `.pdf` / `.docx` 三种格式，并对超过 10MB 的大文件走异步处理：
 
 ```java
 @RestController
@@ -616,59 +636,67 @@ private List<String> extractAndUploadImages(
 @Slf4j
 public class KnowledgeImportController {
 
-    @Resource
-    private KnowledgeInitializer knowledgeInitializer;
+    private static final long ASYNC_THRESHOLD = 10 * 1024 * 1024; // 10MB
 
     @Resource
+    private KnowledgeInitializer knowledgeInitializer;
+    @Resource
     private List<DocumentParser> documentParsers;
+    @Resource
+    private KnowledgeImportAsyncService importAsyncService;
 
     @PostMapping("/import")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
     public BaseResponse<String> importKnowledge(
-            @RequestPart("file") MultipartFile file)
-            throws IOException {
+            @RequestPart("file") MultipartFile file) throws IOException {
         if (file == null || file.isEmpty()) {
-            throw new BusinessException(
-                    ErrorCode.PARAMS_ERROR, "文件不能为空");
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "文件不能为空");
         }
 
         String filename = file.getOriginalFilename();
-        String extension =
-                StringUtils.getFilenameExtension(filename);
+        String extension = StringUtils.getFilenameExtension(filename);
 
         // Markdown 走原有逻辑
-        if ("md".equalsIgnoreCase(extension)
-                || "markdown".equalsIgnoreCase(extension)) {
-            String content = new String(file.getBytes(),
-                    StandardCharsets.UTF_8);
-            int count = knowledgeInitializer
-                    .parseAndStore(content);
-            knowledgeInitializer
-                    .validateImportedCount(count);
-            return ResultUtils.success(
-                    "成功导入 " + count + " 条知识条目");
+        if ("md".equalsIgnoreCase(extension) || "markdown".equalsIgnoreCase(extension)) {
+            String content = new String(file.getBytes(), StandardCharsets.UTF_8);
+            int count = knowledgeInitializer.parseAndStore(content);
+            knowledgeInitializer.validateImportedCount(count);
+            return ResultUtils.success("成功导入 " + count + " 条知识条目");
         }
 
         // PDF / Word 走文档解析器
         DocumentParser parser = documentParsers.stream()
                 .filter(p -> p.supports(extension))
                 .findFirst()
-                .orElseThrow(() -> new BusinessException(
-                        ErrorCode.PARAMS_ERROR,
-                        "不支持的文件格式: " + extension
-                        + "，仅支持 .md / .pdf / .docx"));
+                .orElseThrow(() -> new BusinessException(ErrorCode.PARAMS_ERROR,
+                        "不支持的文件格式: " + extension + "，仅支持 .md / .pdf / .docx"));
 
-        String markdownBlocks = parser.parse(
-                file.getInputStream(), filename);
-        int count = knowledgeInitializer
-                .parseAndStore(markdownBlocks);
+        // 大文件走异步处理
+        if (file.getSize() > ASYNC_THRESHOLD) {
+            String taskId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+            byte[] fileBytes = file.getBytes();
+            importAsyncService.importAsync(taskId, fileBytes, filename, parser);
+            return ResultUtils.success("文件较大，已提交异步导入，任务ID: " + taskId);
+        }
+
+        // 正常大小文件：同步解析（含图片提取）
+        ParseResult result = parser.parseWithImages(file.getInputStream(), filename);
+        int count = knowledgeInitializer.parseAndStore(result.markdownBlocks());
         knowledgeInitializer.validateImportedCount(count);
 
-        log.info("[Knowledge Import] file={}, format={}, "
-                 + "count={}", filename, extension, count);
-        return ResultUtils.success(
-                "成功导入 " + count + " 条知识条目（来源: "
-                + extension.toUpperCase() + "）");
+        String imageInfo = result.imageUrls().isEmpty() ? "" :
+                "，提取 " + result.imageUrls().size() + " 张图片";
+        return ResultUtils.success("成功导入 " + count + " 条知识条目" + imageInfo);
+    }
+
+    @GetMapping("/import/status/{taskId}")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<ImportTaskStatus> getImportStatus(@PathVariable String taskId) {
+        ImportTaskStatus status = importAsyncService.getTaskStatus(taskId);
+        if (status == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "任务不存在: " + taskId);
+        }
+        return ResultUtils.success(status);
     }
 }
 ```
@@ -678,6 +706,8 @@ public class KnowledgeImportController {
 1. 利用 Spring 的 `List<DocumentParser>` 自动注入所有实现类，通过 `supports()` 方法路由到对应解析器。
 2. 新增格式不需要修改 Controller 代码，只需新增一个 `DocumentParser` 实现类（开闭原则）。
 3. Markdown 仍走原有逻辑，保持向后兼容。
+4. 超过 10MB 的大文件走 `KnowledgeImportAsyncService` 异步处理（`@Async` + `Semaphore(2)` 限制并发），返回 taskId 供前端轮询 `/import/status/{taskId}` 查询进度。
+5. PDF/Word 使用 `parseWithImages()` 方法，同时提取文本和图片，图片上传 MinIO 后 URL 写入 chunk metadata。
 
 ---
 
@@ -697,63 +727,108 @@ title: 二分查找基础模板与核心思想
 content_type: 知识点
 tag: 二分查找
 title: 二分查找基础模板与核心思想
-image_url: http://localhost:9000/oj-knowledge/knowledge/hello-algo/page5_img1.png
+image_urls: http://minio:9000/oj-knowledge-images/xxx1.png,http://minio:9000/oj-knowledge-images/xxx2.png
 source_type: pdf
-source_file: hello-algo.pdf
 ```
 
 新增字段说明：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| image_url | String（可选） | 该知识块关联的图片 URL，存储在 MinIO |
+| image_urls | String（可选） | 该知识块关联的图片 URL，多张图片以逗号分隔，存储在 MinIO `oj-knowledge-images` 桶 |
 | source_type | String（可选） | 来源格式：md / pdf / docx |
-| source_file | String（可选） | 来源文件名，便于溯源和管理 |
 
 ### 8.3 KnowledgeInitializer.parseBlock 适配
 
-需要在 `parseBlock` 方法中增加对新 metadata 字段的解析：
+`parseBlock` 方法中已增加对新 metadata 字段的解析，并在 `buildSearchableText()` 中将图片信息写入可检索文本：
 
 ```java
-// 新增：可选字段
-String imageUrl = metadataMap.get("image_url");
-String sourceType = metadataMap.get("source_type");
-String sourceFile = metadataMap.get("source_file");
-
-Map<String, Object> segmentMetadata = new HashMap<>(8);
-segmentMetadata.put("content_type", contentType);
-segmentMetadata.put("tag", tag);
-segmentMetadata.put("title", title);
-if (imageUrl != null && !imageUrl.isBlank()) {
-    segmentMetadata.put("image_url", imageUrl);
+// parseBlock 中提取可选 metadata 字段
+String imageUrls = metadataMap.get("image_urls");
+if (imageUrls != null && !imageUrls.isBlank()) {
+    segmentMetadata.put("image_urls", imageUrls);
 }
+String sourceType = metadataMap.get("source_type");
 if (sourceType != null && !sourceType.isBlank()) {
     segmentMetadata.put("source_type", sourceType);
 }
-if (sourceFile != null && !sourceFile.isBlank()) {
-    segmentMetadata.put("source_file", sourceFile);
+
+// buildSearchableText 中将图片信息写入可检索文本
+private String buildSearchableText(String title, String tag,
+        String contentType, String sourceType, String imageUrls, String body) {
+    StringBuilder text = new StringBuilder();
+    text.append("title: ").append(title).append("\n");
+    text.append("tag: ").append(tag).append("\n");
+    text.append("content_type: ").append(contentType).append("\n");
+    if (sourceType != null && !sourceType.isBlank()) {
+        text.append("source_type: ").append(sourceType).append("\n");
+    }
+    if (imageUrls != null && !imageUrls.isBlank()) {
+        text.append("has_images: true\n");
+        text.append("image_urls: ").append(imageUrls).append("\n");
+    }
+    text.append("\n").append(body);
+    return text.toString();
 }
 ```
 
 ### 8.4 RAG 检索结果返回图片
 
-在 `OJKnowledgeRetriever` 的检索结果中，如果 chunk 包含 `image_url`，可以在返回给前端的结果中附带图片链接：
+RAG 检索侧通过 `ImageAwareContentRetriever` 装饰器实现图片感知，它包装了 `oj_knowledge` 集合的 `EmbeddingStoreContentRetriever`。当检索到的 chunk 包含 `image_urls` metadata 时，自动在上下文中追加图片引用段：
 
 ```java
-matches.stream()
-    .filter(match -> match.embedded() != null)
-    .map(match -> {
-        TextSegment segment = match.embedded();
-        String text = segment.text();
-        String imageUrl = segment.metadata()
-                .getString("image_url");
-        if (imageUrl != null) {
-            text += "\n[关联图片](" + imageUrl + ")";
+public class ImageAwareContentRetriever implements ContentRetriever {
+
+    private final ContentRetriever delegate;
+
+    @Override
+    public List<Content> retrieve(Query query) {
+        return delegate.retrieve(query).stream()
+                .map(this::enrichWithImages)
+                .toList();
+    }
+
+    private Content enrichWithImages(Content content) {
+        TextSegment segment = content.textSegment();
+        if (segment == null) return content;
+        String imageUrls = segment.metadata().getString("image_urls");
+        if (imageUrls == null || imageUrls.isBlank()) return content;
+
+        StringBuilder enriched = new StringBuilder(segment.text());
+        enriched.append("\n\n[RAG_SOURCE_IMAGES]");
+        enriched.append("\nThe following Markdown images belong to this retrieved knowledge segment. ");
+        enriched.append("If they are relevant to the user's question, keep these image links in the answer.");
+        for (String url : imageUrls.split(",")) {
+            String trimmed = url.trim();
+            if (!trimmed.isEmpty()) {
+                enriched.append("\n![knowledge-image](").append(trimmed).append(")");
+            }
         }
-        return text;
-    })
-    .collect(Collectors.joining("\n\n"));
+        return Content.from(TextSegment.from(enriched.toString(), segment.metadata()));
+    }
+}
 ```
+
+在 `AiModelHolder.buildRetrievalAugmentor()` 中，`ImageAwareContentRetriever` 包装了 `oj_knowledge` 的 base retriever，与 `oj_question` retriever 一起注册到 `DefaultQueryRouter`：
+
+```java
+EmbeddingStoreContentRetriever baseKnowledgeRetriever = EmbeddingStoreContentRetriever.builder()
+        .embeddingStore(embeddingStore).embeddingModel(this.embeddingModel)
+        .maxResults(topK).minScore(minScore).build();
+
+ImageAwareContentRetriever knowledgeRetriever =
+        new ImageAwareContentRetriever(baseKnowledgeRetriever);
+
+EmbeddingStoreContentRetriever questionRetriever = EmbeddingStoreContentRetriever.builder()
+        .embeddingStore(questionEmbeddingStore).embeddingModel(this.embeddingModel)
+        .maxResults(topK).minScore(minScore).build();
+
+return DefaultRetrievalAugmentor.builder()
+        .queryRouter(new DefaultQueryRouter(knowledgeRetriever, questionRetriever))
+        .build();
+```
+
+同时，System Prompt 中增加了【图片引用规范】，要求 LLM 原样保留 RAG 检索到的 markdown 图片链接，禁止修改或编造图片 URL。
 
 ---
 
@@ -879,39 +954,41 @@ const beforeUpload = (file) => {
 
 ### 12.1 分阶段实施
 
-**第一阶段（核心链路，2 天）：**
+**第一阶段（核心链路）：** ✅ 已完成
 
-1. 引入 PDFBox + POI + MinIO 依赖
-2. 实现 MinioConfig + MinioService
-3. 实现 PdfDocumentParser（文本提取 + 自动切片）
-4. 实现 WordDocumentParser（文本提取 + 按标题切片）
-5. 修改 KnowledgeImportController 支持多格式路由
-6. 测试：用 Hello 算法 PDF 验证切片效果
+1. ✅ 引入 PDFBox + POI + MinIO 依赖
+2. ✅ 实现 MinioConfig + MinioService
+3. ✅ 实现 PdfDocumentParser（文本提取 + 自动切片 + 图片提取上传）
+4. ✅ 实现 WordDocumentParser（文本提取 + 按标题切片 + 图片提取上传）
+5. ✅ 修改 KnowledgeImportController 支持多格式路由 + 大文件异步处理
+6. ✅ 测试：用 Hello 算法 PDF 验证切片效果
 
-**第二阶段（图片支持，1 天）：**
+**第二阶段（图片 + RAG 感知）：** ✅ 已完成
 
-1. 实现 PDF 图片提取 + MinIO 上传
-2. 实现 Word 图片提取 + MinIO 上传
-3. 扩展 metadata 支持 image_url 字段
-4. 修改 parseBlock 兼容新 metadata 字段
+1. ✅ PDF 图片提取 + MinIO 上传（`PdfDocumentParser.extractAndUploadImages()`）
+2. ✅ Word 图片提取 + MinIO 上传（`WordDocumentParser.extractAndUploadImages()`）
+3. ✅ 扩展 metadata 支持 `image_urls` 字段（逗号分隔多图）
+4. ✅ `KnowledgeInitializer.parseBlock` 兼容新 metadata 字段
+5. ✅ `ImageAwareContentRetriever` 装饰器实现 RAG 检索图片感知
+6. ✅ System Prompt 增加【图片引用规范】
 
-**第三阶段（体验优化，1 天）：**
+**第三阶段（体验优化）：** 部分完成
 
-1. 前端上传组件适配多格式
-2. 上传结果摘要展示
-3. 大文件异步处理（可选，PDF 超过 100 页时走异步）
+1. 前端上传组件适配多格式（待前端配合）
+2. 上传结果摘要展示（待前端配合）
+3. ✅ 大文件异步处理（`KnowledgeImportAsyncService`，10MB 阈值，`Semaphore(2)` 限并发）
 4. 导入历史记录（可选，记录每次导入的文件名、条目数、时间）
 
 ### 12.2 测试验证清单
 
-- [ ] 上传 Hello 算法 PDF，验证切片数量和质量
-- [ ] 上传一份 .docx 算法笔记，验证标题识别和切片
-- [ ] 上传 .md 文件，验证原有逻辑不受影响
-- [ ] 上传空文件 / 损坏文件，验证错误提示
-- [ ] 上传扫描版 PDF，验证提示信息
-- [ ] 检查 MinIO 中图片是否正确上传和可访问
-- [ ] RAG 检索验证：导入后搜索"二分查找"，确认能命中 PDF 中的相关内容
-- [ ] 检索结果中的 image_url 是否正确返回
+- [x] 上传 Hello 算法 PDF，验证切片数量和质量
+- [x] 上传一份 .docx 算法笔记，验证标题识别和切片
+- [x] 上传 .md 文件，验证原有逻辑不受影响
+- [x] 上传空文件 / 损坏文件，验证错误提示
+- [x] 检查 MinIO 中图片是否正确上传和可访问
+- [x] RAG 检索验证：导入后搜索"二分查找"，确认能命中 PDF 中的相关内容
+- [x] 检索结果中的 image_urls 是否正确返回，LLM 回答中是否保留图片链接
+- [ ] 上传扫描版 PDF，验证提示信息（当前不支持 OCR，提取文本为空时会跳过）
 
 ---
 
@@ -919,8 +996,10 @@ const beforeUpload = (file) => {
 
 这个功能在面试中可以从以下角度展开：
 
-1. **工程设计**：策略模式（`DocumentParser` 接口 + 多实现），新增格式零修改 Controller（开闭原则）。
+1. **工程设计**：策略模式（`DocumentParser` 接口 + 多实现），新增格式零修改 Controller（开闭原则）。接口设计了 `parse()` 和 `parseWithImages()` 两个方法，后者返回 `ParseResult` record 同时携带文本和图片 URL 列表，default 实现保证向后兼容。
 2. **文本切片**：不是简单按固定长度切，而是按语义结构（章节标题）切片，保证每个 chunk 的语义完整性。为什么 chunk 大小控制在 80~600 字符？太短信息量不足导致 embedding 质量低，太长超出 embedding 模型的有效编码窗口。
-3. **图片处理**：PDF 图片提取用 PDFBox 的 `PDResources` API，不是按页渲染截图（那样会丢失分辨率），而是直接提取原始嵌入图片。
-4. **存储选型**：为什么用 MinIO 而不是直接存数据库 BLOB？图片是二进制大对象，存数据库会拖慢查询性能；MinIO 兼容 S3 协议，生产环境可以无缝切换到阿里云 OSS / AWS S3。
-5. **与现有系统的集成**：解析器只输出 markdown block 格式字符串，完全复用现有的 `parseAndStore()` → embedding → Milvus 链路，改动最小化。
+3. **图片处理**：PDF 图片提取用 PDFBox 的 `PDResources` API，不是按页渲染截图（那样会丢失分辨率），而是直接提取原始嵌入图片。图片按页码关联到对应 chunk（`assignImagesToChunks`），URL 以逗号分隔存入 `image_urls` metadata。
+4. **RAG 图片感知**：通过 `ImageAwareContentRetriever` 装饰器模式包装 base retriever，检索到含图片的 chunk 时自动追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用到 LLM 上下文，配合 System Prompt 中的【图片引用规范】，实现端到端的图文混合知识检索。
+5. **存储选型**：为什么用 MinIO 而不是直接存数据库 BLOB？图片是二进制大对象，存数据库会拖慢查询性能；MinIO 兼容 S3 协议，生产环境可以无缝切换到阿里云 OSS / AWS S3。
+6. **大文件异步处理**：超过 10MB 的文件走 `@Async` 异步导入，`Semaphore(2)` 限制并发防止 OOM，返回 taskId 供前端轮询状态。
+7. **与现有系统的集成**：解析器只输出 markdown block 格式字符串，完全复用现有的 `parseAndStore()` → embedding → Milvus 链路，改动最小化。

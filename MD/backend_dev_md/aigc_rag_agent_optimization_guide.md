@@ -325,17 +325,31 @@ flowchart TB
 ```mermaid
 flowchart LR
     A["用户 query（原始）"] --> B["DefaultQueryRouter<br/>路由到两个 Retriever"]
-    B --> C1["oj_knowledge<br/>知识点检索"]
+    B --> C1["ImageAwareContentRetriever<br/>oj_knowledge 知识点检索"]
     B --> C2["oj_question<br/>题目检索"]
-    C1 --> D["合并结果"]
+    C1 --> D["合并结果<br/>（含图片引用）"]
     C2 --> D
     D --> E["Redis 缓存"]
     E --> F["注入 Prompt"]
+    F --> G["LLM 生成回答"]
+    G --> H["LinkValidationFilter<br/>链接真实性校验"]
 ```
 
-> **架构说明**：`AiModelHolder` 使用 LangChain4j 内置的 `DefaultRetrievalAugmentor` + `DefaultQueryRouter`，将用户 query 同时发给两个 `EmbeddingStoreContentRetriever`（分别查 `oj_knowledge` 知识点集合和 `oj_question` 题目集合），结果自动合并后注入 Prompt。这样当用户问知识点时，知识条目分数高自然排前面；问题目推荐时，题目条目排前面。
+> **架构说明**：`AiModelHolder` 使用 LangChain4j 内置的 `DefaultRetrievalAugmentor` + `DefaultQueryRouter`，将用户 query 同时发给两个 `ContentRetriever`（分别查 `oj_knowledge` 知识点集合和 `oj_question` 题目集合），结果自动合并后注入 Prompt。这样当用户问知识点时，知识条目分数高自然排前面；问题目推荐时，题目条目排前面。
 >
 > `oj_question` 集合的向量文本包含题目 ID 和链接（如 `/view/question/42`），LLM 可以直接引用真实链接，避免编造。
+>
+> `oj_knowledge` 的 retriever 被 `ImageAwareContentRetriever` 装饰器包装：当检索到的 chunk 包含 `image_urls` metadata 时，自动在上下文中追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用（`![knowledge-image](url)`），使 LLM 可以在回答中直接引用知识库配图。
+
+**防幻觉机制（已落地）**：
+
+当前架构在三个层面防止 LLM 编造虚假题目信息：
+
+| 层面 | 机制 | 实现 |
+|------|------|------|
+| Prompt 层 | System Prompt 中 6 条硬约束 | 禁止编造题目名称/ID/链接，推荐题目必须先调用工具，搜不到则说"平台暂无相关练习题" |
+| 架构层 | 双集合 RAG + 图片感知 | `oj_question` 向量文本内嵌真实题目 ID 和链接；`ImageAwareContentRetriever` 自动携带图片引用 |
+| 输出层 | `LinkValidationFilter` 后置过滤 | 正则匹配回答中所有 `/view/question/{id}` 链接，逐一查库验证，不存在的链接自动剥离（流式场景下缓冲处理避免链接被截断） |
 
 问题（优化前的原始架构只查 oj_knowledge，已修复）：
 - ~~RAG 只查 `oj_knowledge` 集合，不查 `oj_question`，导致 LLM 推荐题目时编造不存在的题目名和 ID。~~（已通过 `DefaultQueryRouter` 双集合检索修复）
