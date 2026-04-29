@@ -1,6 +1,7 @@
 package com.XI.xi_oj.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
+import com.XI.xi_oj.ai.agent.AgentLoopService;
 import com.XI.xi_oj.ai.agent.AiModelHolder;
 import com.XI.xi_oj.ai.filter.LinkValidationFilter;
 import com.XI.xi_oj.ai.model.AiChatHistoryPageRequest;
@@ -9,6 +10,7 @@ import com.XI.xi_oj.ai.model.AiChatRecord;
 import com.XI.xi_oj.ai.store.AiChatRecordMapper;
 import com.XI.xi_oj.ai.tools.OJTools;
 import com.XI.xi_oj.service.AiChatService;
+import com.XI.xi_oj.service.AiConfigService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import jakarta.annotation.Resource;
@@ -39,6 +41,15 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
     @Resource
     private LinkValidationFilter linkValidationFilter;
 
+    @Resource
+    private AiConfigService aiConfigService;
+
+    @Resource
+    private AgentLoopService agentLoopService;
+
+    @Resource
+    private AgentTraceService agentTraceService;
+
     @Override
     public String chat(String chatId, Long userId, String message) {
         return chat(chatId, userId, message, null);
@@ -50,7 +61,14 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
         String enrichedMessage = buildContextualMessage(questionId, userId, message);
         OJTools.setCurrentUserId(userId);
         try {
-            String answer = aiModelHolder.getOjChatAgent().chat(memoryId, enrichedMessage);
+            String answer;
+            if (isAdvancedAgentMode()) {
+                AgentLoopService.AgentResult result = agentLoopService.run(enrichedMessage, userId);
+                answer = result.answer();
+                agentTraceService.saveTraceAsync(userId, chatId, message, result.steps());
+            } else {
+                answer = aiModelHolder.getOjChatAgent().chat(memoryId, enrichedMessage);
+            }
             answer = linkValidationFilter.validate(answer);
             saveRecord(userId, chatId, message, answer);
             return answer;
@@ -69,6 +87,27 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
         StringBuilder buffer = new StringBuilder();
         String memoryId = buildMemoryId(userId, chatId);
         String enrichedMessage = buildContextualMessage(questionId, userId, message);
+        if (isAdvancedAgentMode()) {
+            return Flux.<String>create(sink -> {
+                Thread.startVirtualThread(() -> {
+                    OJTools.setCurrentUserId(userId);
+                    try {
+                        log.info("[AI Chat] advanced agent stream, userId={}, chatId={}", userId, chatId);
+                        agentLoopService.runStreaming(enrichedMessage, userId, sink, result -> {
+                            agentTraceService.saveTraceAsync(userId, chatId, message, result.steps());
+                            aiChatAsyncService.saveRecordAsync(userId, chatId, message, result.answer());
+                        });
+                    } catch (Exception e) {
+                        log.error("[AI Chat] advanced stream failed, chatId={}", chatId, e);
+                        sink.error(e);
+                    } finally {
+                        OJTools.clearCurrentUserId();
+                    }
+                });
+            }).doOnError(e -> log.error("[AI Chat] advanced stream error, chatId={}", chatId, e));
+        }
+
+        log.info("[AI Chat] simple AiServices stream enabled, userId={}, chatId={}", userId, chatId);
         OJTools.setCurrentUserId(userId);
         Flux<String> rawStream = aiModelHolder.getOjChatAgent().chatStream(memoryId, enrichedMessage);
         return linkValidationFilter.apply(rawStream)
@@ -149,5 +188,10 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
             return chatId;
         }
         return userId + ":" + chatId;
+    }
+
+    private boolean isAdvancedAgentMode() {
+        String mode = aiConfigService.getConfigValue("ai.agent.mode");
+        return "advanced".equalsIgnoreCase(mode);
     }
 }

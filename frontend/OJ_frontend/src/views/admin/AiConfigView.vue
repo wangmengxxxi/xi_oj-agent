@@ -107,7 +107,15 @@ const form = reactive({
   'ai.model.embedding_name': '',
   'ai.rag.top_k': '' as string | number,
   'ai.rag.similarity_threshold': '' as string | number,
+  'ai.rerank.enabled': 'false',
+  'ai.rerank.model_name': '',
+  'ai.rerank.endpoint': '',
+  'ai.rerank.top_n': '' as string | number,
+  'ai.agent.mode': 'simple',
+  'ai.agent.max_steps': '' as string | number,
+  'ai.agent.tool_max_retry': '' as string | number,
   'ai.prompt.chat_system': '',
+  'ai.prompt.agent_system': '',
   'ai.prompt.code_analysis': '',
   'ai.prompt.wrong_analysis': '',
   'ai.prompt.question_parse': '',
@@ -181,6 +189,9 @@ async function loadConfig() {
     // a-input-number 需要 number 类型才能正确显示
     if (form['ai.rag.top_k']) form['ai.rag.top_k'] = Number(form['ai.rag.top_k'])
     if (form['ai.rag.similarity_threshold']) form['ai.rag.similarity_threshold'] = Number(form['ai.rag.similarity_threshold'])
+    if (form['ai.rerank.top_n']) form['ai.rerank.top_n'] = Number(form['ai.rerank.top_n'])
+    if (form['ai.agent.max_steps']) form['ai.agent.max_steps'] = Number(form['ai.agent.max_steps'])
+    if (form['ai.agent.tool_max_retry']) form['ai.agent.tool_max_retry'] = Number(form['ai.agent.tool_max_retry'])
     if (data['ai.provider']) selectedProvider.value = data['ai.provider']
     if (data['ai.model.name']) providerModelName.value = data['ai.model.name']
     if (data['ai.model.base_url']) providerBaseUrl.value = data['ai.model.base_url']
@@ -491,14 +502,91 @@ onUnmounted(() => {
               <a-input-number v-model="form['ai.rag.similarity_threshold']" :min="0" :max="1" :step="0.05" style="width: 100%" />
             </a-form-item>
           </div>
+
+          <div class="rerank-section">
+            <div class="rerank-title">Rerank 重排序</div>
+            <div class="field-hint" style="margin-bottom: 12px">
+              开启后，检索结果将经过 Rerank 模型重排序，提升相关性。使用聊天模型的 API 密钥进行认证。
+            </div>
+            <a-form-item label="启用 Rerank">
+              <a-switch
+                :model-value="form['ai.rerank.enabled'] === 'true'"
+                @change="(val: boolean) => form['ai.rerank.enabled'] = val ? 'true' : 'false'"
+              />
+            </a-form-item>
+            <div class="rag-row">
+              <a-form-item label="Rerank 模型名称">
+                <a-input
+                  v-model="form['ai.rerank.model_name']"
+                  placeholder="gte-rerank"
+                  :disabled="form['ai.rerank.enabled'] !== 'true'"
+                />
+              </a-form-item>
+              <a-form-item label="Rerank 保留条数">
+                <a-input-number
+                  v-model="form['ai.rerank.top_n']"
+                  :min="1"
+                  :max="20"
+                  style="width: 100%"
+                  :disabled="form['ai.rerank.enabled'] !== 'true'"
+                />
+              </a-form-item>
+            </div>
+            <a-form-item label="Rerank API 端点">
+              <a-input
+                v-model="form['ai.rerank.endpoint']"
+                placeholder="默认使用 DashScope Rerank 端点"
+                :disabled="form['ai.rerank.enabled'] !== 'true'"
+              />
+              <div class="field-hint">留空则使用默认 DashScope 端点，如使用其他兼容服务可自定义</div>
+            </a-form-item>
+          </div>
+        </div>
+
+        <!-- Agent 配置 -->
+        <div class="config-section">
+          <div class="section-title">Agent 推理配置</div>
+          <a-form-item label="推理模式">
+            <a-select v-model="form['ai.agent.mode']" style="width: 100%">
+              <a-option value="simple">标准模式（LangChain4j AiServices）</a-option>
+              <a-option value="advanced">高级模式（自定义 ReAct 推理链）</a-option>
+            </a-select>
+            <div class="field-hint">标准模式由框架自动管理工具调用，高级模式支持逐步推理追踪和自定义控制</div>
+          </a-form-item>
+          <div class="rag-row">
+            <a-form-item label="最大推理步数">
+              <a-input-number
+                v-model="form['ai.agent.max_steps']"
+                :min="1"
+                :max="20"
+                style="width: 100%"
+                :disabled="form['ai.agent.mode'] !== 'advanced'"
+              />
+              <div class="field-hint">高级模式下 Agent 单次对话最多执行的推理步数</div>
+            </a-form-item>
+            <a-form-item label="工具调用重试次数">
+              <a-input-number
+                v-model="form['ai.agent.tool_max_retry']"
+                :min="0"
+                :max="5"
+                style="width: 100%"
+                :disabled="form['ai.agent.mode'] !== 'advanced'"
+              />
+              <div class="field-hint">高级模式下单个工具调用失败后的最大重试次数</div>
+            </a-form-item>
+          </div>
         </div>
 
         <!-- Prompt 配置 -->
         <div class="config-section">
           <div class="section-title">Prompt 配置</div>
-          <a-form-item label="AI 对话系统 Prompt">
+          <a-form-item label="AI 对话系统 Prompt（标准模式）">
             <a-textarea v-model="form['ai.prompt.chat_system']" :auto-size="{ minRows: 4, maxRows: 12 }" placeholder="AI 编程助手的系统指令，留空则使用默认 Prompt" />
-            <div class="field-hint">控制 AI 编程助手的行为和回答风格</div>
+            <div class="field-hint">标准模式（AiServices）下 AI 编程助手的行为和回答风格</div>
+          </a-form-item>
+          <a-form-item label="AI 对话系统 Prompt（高级模式）">
+            <a-textarea v-model="form['ai.prompt.agent_system']" :auto-size="{ minRows: 4, maxRows: 12 }" placeholder="高级模式 ReAct 推理的系统指令，留空则使用默认 Prompt。注意：必须保留 Thought/Action/Answer 格式约束" />
+            <div class="field-hint">高级模式（ReAct 推理链）下的系统指令，包含工具列表和输出格式约束，修改时请勿删除格式规则</div>
           </a-form-item>
           <a-form-item label="代码分析 Prompt">
             <a-textarea v-model="form['ai.prompt.code_analysis']" :auto-size="{ minRows: 3, maxRows: 8 }" />
@@ -690,6 +778,19 @@ onUnmounted(() => {
   font-weight: 600;
   color: #595959;
   margin-bottom: 12px;
+}
+
+.rerank-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed #e8e8e8;
+}
+
+.rerank-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #595959;
+  margin-bottom: 4px;
 }
 
 .nav-link-bar {

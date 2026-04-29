@@ -35,8 +35,10 @@ public class AiConfigController {
             "ai.provider", "ai.provider.api_key_encrypted", "ai.embedding.api_key_encrypted",
             "ai.model.name", "ai.model.base_url", "ai.model.embedding_name",
             "ai.rag.top_k", "ai.rag.similarity_threshold",
+            "ai.rerank.enabled", "ai.rerank.model_name", "ai.rerank.endpoint", "ai.rerank.top_n",
+            "ai.agent.mode", "ai.agent.max_steps", "ai.agent.tool_max_retry",
             "ai.prompt.code_analysis", "ai.prompt.wrong_analysis", "ai.prompt.question_parse",
-            "ai.prompt.chat_system"
+            "ai.prompt.chat_system", "ai.prompt.agent_system"
     );
 
     private static final Set<String> ENCRYPTED_KEYS = Set.of(

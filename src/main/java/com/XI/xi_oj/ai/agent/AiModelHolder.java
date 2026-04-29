@@ -13,6 +13,10 @@ import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import com.XI.xi_oj.ai.rag.ImageAwareContentRetriever;
+import com.XI.xi_oj.ai.rag.QueryRewriteTransformer;
+import com.XI.xi_oj.ai.rag.QueryRewriter;
+import com.XI.xi_oj.ai.rag.RerankService;
+import com.XI.xi_oj.ai.rag.RerankingContentAggregator;
 import dev.langchain4j.rag.DefaultRetrievalAugmentor;
 import dev.langchain4j.rag.RetrievalAugmentor;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
@@ -55,6 +59,8 @@ public class AiModelHolder {
     private final MilvusEmbeddingStore questionEmbeddingStore;
     // 聊天记忆存储
     private final ChatMemoryStore chatMemoryStore;
+    private final QueryRewriter queryRewriter;
+    private final RerankService rerankService;
 
     @Value("${ai.encrypt.key}")
     private String encryptKey;
@@ -80,12 +86,16 @@ public class AiModelHolder {
                          OJTools ojTools,
                          @Qualifier("embeddingStore") MilvusEmbeddingStore embeddingStore,
                          @Qualifier("questionEmbeddingStore") MilvusEmbeddingStore questionEmbeddingStore,
-                         ChatMemoryStore chatMemoryStore) {
+                         ChatMemoryStore chatMemoryStore,
+                         QueryRewriter queryRewriter,
+                         RerankService rerankService) {
         this.aiConfigService = aiConfigService;
         this.ojTools = ojTools;
         this.embeddingStore = embeddingStore;
         this.questionEmbeddingStore = questionEmbeddingStore;
         this.chatMemoryStore = chatMemoryStore;
+        this.queryRewriter = queryRewriter;
+        this.rerankService = rerankService;
     }
 
     /**
@@ -410,6 +420,8 @@ public class AiModelHolder {
 
         return DefaultRetrievalAugmentor.builder()
                 .queryRouter(new DefaultQueryRouter(knowledgeRetriever, questionRetriever))
+                .queryTransformer(new QueryRewriteTransformer(queryRewriter))
+                .contentAggregator(new RerankingContentAggregator(rerankService, topK))
                 .build();
     }
 }

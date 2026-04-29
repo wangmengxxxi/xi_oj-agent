@@ -11,6 +11,7 @@ interface ChatMessage {
   role: 'user' | 'ai'
   content: string
   loading?: boolean
+  statusText?: string
 }
 
 const router = useRouter()
@@ -100,15 +101,22 @@ function handleSend() {
     onToken(token) {
       messages.value[aiIdx].content += token
       messages.value[aiIdx].loading = false
+      messages.value[aiIdx].statusText = ''
+      scrollToBottom()
+    },
+    onStatus(msg) {
+      messages.value[aiIdx].statusText = msg
       scrollToBottom()
     },
     onDone() {
       messages.value[aiIdx].loading = false
+      messages.value[aiIdx].statusText = ''
       sending.value = false
       scrollToBottom()
     },
     onError(msg) {
       messages.value[aiIdx].loading = false
+      messages.value[aiIdx].statusText = ''
       sending.value = false
       if (msg.includes('42900') || msg.includes('限') || msg.includes('次数')) {
         rateLimitMsg.value = msg
@@ -136,6 +144,25 @@ async function handleClear() {
     Message.success('会话已清空')
   } catch (err: any) {
     Message.error(err?.message || '清空失败')
+  }
+}
+
+async function handleDeleteSession(sessionId: string) {
+  try {
+    await clearAiChat({ chatId: sessionId })
+    const idx = sessions.findIndex(s => s.id === sessionId)
+    if (idx !== -1) sessions.splice(idx, 1)
+    if (sessionId === chatId.value) {
+      if (sessions.length > 0) {
+        chatId.value = sessions[0].id
+        loadHistory()
+      } else {
+        handleNewSession()
+      }
+    }
+    Message.success('会话已删除')
+  } catch (err: any) {
+    Message.error(err?.message || '删除失败')
   }
 }
 
@@ -195,7 +222,8 @@ onUnmounted(() => { if (sseController) sseController.abort() })
           :class="['session-item', { active: s.id === chatId }]"
           @click="switchSession(s.id)"
         >
-          {{ s.label }}
+          <span class="session-label">{{ s.label }}</span>
+          <span class="session-delete" @click.stop="handleDeleteSession(s.id)" title="删除会话">×</span>
         </div>
       </div>
     </div>
@@ -221,7 +249,10 @@ onUnmounted(() => { if (sseController) sseController.abort() })
               {{ msg.role === 'user' ? '我' : 'AI' }}
             </div>
             <div class="msg-bubble">
-              <a-spin v-if="msg.loading" size="16" />
+              <div v-if="msg.loading" class="agent-status">
+                <a-spin size="16" />
+                <span v-if="msg.statusText" class="status-text">{{ msg.statusText }}</span>
+              </div>
               <MdViewer v-else-if="msg.role === 'ai'" :content="msg.content" />
               <div v-else class="msg-text">{{ msg.content }}</div>
             </div>
@@ -299,9 +330,41 @@ onUnmounted(() => { if (sseController) sseController.abort() })
   color: #595959;
   cursor: pointer;
   transition: background 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.session-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.session-delete {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: #bfbfbf;
+  opacity: 0;
+  transition: all 0.15s;
+}
+
+.session-item:hover .session-delete {
+  opacity: 1;
+}
+
+.session-delete:hover {
+  background: #fff1f0;
+  color: #ff4d4f;
 }
 
 .session-item:hover {
@@ -411,6 +474,23 @@ onUnmounted(() => { if (sseController) sseController.abort() })
 .msg-text {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.agent-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-status .status-text {
+  font-size: 13px;
+  color: #8c8c8c;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .rate-limit-bar {

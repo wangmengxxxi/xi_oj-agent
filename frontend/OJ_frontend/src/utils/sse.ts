@@ -2,6 +2,7 @@ export interface SSECallbacks {
   onToken: (token: string) => void
   onDone: () => void
   onError: (msg: string) => void
+  onStatus?: (msg: string) => void
 }
 
 export function fetchSSE(
@@ -47,6 +48,8 @@ export function fetchSSE(
               const json = JSON.parse(raw)
               if (currentEventType === 'error') {
                 callbacks.onError(json.error ?? '流式输出异常')
+              } else if (currentEventType === 'status') {
+                callbacks.onStatus?.(json.d ?? '')
               } else if (json.done === true) {
                 callbacks.onDone()
               } else if ('d' in json) {

@@ -1,6 +1,6 @@
 # XI OJ AIGC 进阶优化方案：RAG 深度优化 + 自定义 Agent Loop
 
-更新时间：2026-04-23
+更新时间：2026-04-29
 前置依赖：已完成 AIGC 基础模块（参见 `aigc_engineering_implementation_guide.md`）
 
 ---
@@ -201,7 +201,7 @@ LangChain4j 的 `AiServices` 帮你封装了这个循环，你只需要声明接
 
 让 LLM 在对话过程中调用外部函数获取信息或执行操作。
 
-你的项目里有 7 个工具：
+你的项目里有 11 个工具：
 - `query_question_info`：按关键词或 ID 查题目信息
 - `judge_user_code`：提交代码判题
 - `query_user_wrong_question`：查某道题的错题记录
@@ -209,6 +209,10 @@ LangChain4j 的 `AiServices` 帮你封装了这个循环，你只需要声明接
 - `find_similar_questions`：基于向量检索查找相似题目
 - `list_user_wrong_questions`：查询用户所有错题列表
 - `query_user_submit_history`：查询用户提交历史
+- `query_user_mastery`：分析用户各知识点掌握情况（AC率、错题数）
+- `get_question_hints`：获取题目分层提示（考点→方向→框架），用于引导式教学
+- `run_custom_test`：用自定义输入测试用户代码并与标准答案对比
+- `diagnose_error_pattern`：分析用户错题的系统性错误模式
 
 LLM 不是直接执行这些函数，而是输出"我想调用 xxx 工具，参数是 yyy"，然后由你的代码解析这个意图、执行函数、把结果返回给 LLM。
 
@@ -320,14 +324,15 @@ flowchart TB
 
 ## 二、方向 B：RAG 深度优化
 
-### 2.1 当前 RAG 链路（现状）
+### 2.1 当前 RAG 链路（已落地）
 
 ```mermaid
 flowchart LR
-    A["用户 query（原始）"] --> B["DefaultQueryRouter<br/>路由到两个 Retriever"]
+    A["用户 query（原始）"] --> QR["QueryRewriteTransformer<br/>轻量模型改写"]
+    QR --> B["DefaultQueryRouter<br/>路由到两个 Retriever"]
     B --> C1["ImageAwareContentRetriever<br/>oj_knowledge 知识点检索"]
     B --> C2["oj_question<br/>题目检索"]
-    C1 --> D["合并结果<br/>（含图片引用）"]
+    C1 --> D["RerankingContentAggregator<br/>Cross-Encoder 精排合并"]
     C2 --> D
     D --> E["Redis 缓存"]
     E --> F["注入 Prompt"]
@@ -335,11 +340,15 @@ flowchart LR
     G --> H["LinkValidationFilter<br/>链接真实性校验"]
 ```
 
-> **架构说明**：`AiModelHolder` 使用 LangChain4j 内置的 `DefaultRetrievalAugmentor` + `DefaultQueryRouter`，将用户 query 同时发给两个 `ContentRetriever`（分别查 `oj_knowledge` 知识点集合和 `oj_question` 题目集合），结果自动合并后注入 Prompt。这样当用户问知识点时，知识条目分数高自然排前面；问题目推荐时，题目条目排前面。
+> **架构说明**：`AiModelHolder.buildRetrievalAugmentor()` 使用 LangChain4j 内置的 `DefaultRetrievalAugmentor`，通过三个扩展点组装 RAG pipeline：
+>
+> 1. **QueryTransformer** → `QueryRewriteTransformer`：将用户口语化 query 改写为信息更丰富的检索 query（委托 `QueryRewriter`）
+> 2. **QueryRouter** → `DefaultQueryRouter`：将改写后的 query 同时发给两个 `ContentRetriever`（`oj_knowledge` + `oj_question`）
+> 3. **ContentAggregator** → `RerankingContentAggregator`：合并两个 Retriever 的结果后，调用 DashScope Rerank API 精排，取 TopN
+>
+> `oj_knowledge` 的 retriever 被 `ImageAwareContentRetriever` 装饰器包装：当检索到的 chunk 包含 `image_urls` metadata 时，自动在上下文中追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用。
 >
 > `oj_question` 集合的向量文本包含题目 ID 和链接（如 `/view/question/42`），LLM 可以直接引用真实链接，避免编造。
->
-> `oj_knowledge` 的 retriever 被 `ImageAwareContentRetriever` 装饰器包装：当检索到的 chunk 包含 `image_urls` metadata 时，自动在上下文中追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用（`![knowledge-image](url)`），使 LLM 可以在回答中直接引用知识库配图。
 
 **防幻觉机制（已落地）**：
 
@@ -351,204 +360,135 @@ flowchart LR
 | 架构层 | 双集合 RAG + 图片感知 | `oj_question` 向量文本内嵌真实题目 ID 和链接；`ImageAwareContentRetriever` 自动携带图片引用 |
 | 输出层 | `LinkValidationFilter` 后置过滤 | 正则匹配回答中所有 `/view/question/{id}` 链接，逐一查库验证，不存在的链接自动剥离（流式场景下缓冲处理避免链接被截断） |
 
-问题（优化前的原始架构只查 oj_knowledge，已修复）：
+问题（优化前的原始架构，已全部修复）：
 - ~~RAG 只查 `oj_knowledge` 集合，不查 `oj_question`，导致 LLM 推荐题目时编造不存在的题目名和 ID。~~（已通过 `DefaultQueryRouter` 双集合检索修复）
-- 用户 query 通常是口语化短句（"二分怎么写"），语义信息稀疏，Embedding 质量低。
-- 向量检索只做了相似度阈值过滤，没有精排，TopK 结果质量参差不齐。
-- 没有量化指标，无法衡量优化效果。
+- ~~用户 query 通常是口语化短句（"二分怎么写"），语义信息稀疏，Embedding 质量低。~~（已通过 `QueryRewriteTransformer` + `QueryRewriter` 改写修复）
+- ~~向量检索只做了相似度阈值过滤，没有精排，TopK 结果质量参差不齐。~~（已通过 `RerankingContentAggregator` + `RerankService` Cross-Encoder 精排修复）
+- 没有量化指标，无法衡量优化效果。（离线评估体系待建设，见 2.5 节）
 
-### 2.2 优化后 RAG 链路（目标）
+### 2.2 RAG Pipeline 组装代码（`AiModelHolder.buildRetrievalAugmentor()`）
 
-```mermaid
-flowchart LR
-    A["用户 query（原始）"] --> B["QueryRewriter<br/>轻量模型改写"]
-    B --> C["DefaultQueryRouter<br/>路由到两个 Retriever"]
-    C --> D1["oj_knowledge<br/>知识点检索 topK=10"]
-    C --> D2["oj_question<br/>题目检索 topK=10"]
-    D1 --> E["合并结果"]
-    D2 --> E
-    E --> F["RerankService<br/>Cross-Encoder 精排"]
-    F --> G["取 Top3~5"]
-    G --> H["Redis 缓存"]
-    H --> I["注入 Prompt"]
+以下是 `AiModelHolder` 中实际的 pipeline 组装逻辑，展示了 Query Rewrite、双集合路由、Rerank 三个扩展点如何串联：
+
+```java
+private RetrievalAugmentor buildRetrievalAugmentor() {
+    int topK = Integer.parseInt(aiConfigService.getConfigValue("ai.rag.top_k"));
+    double minScore = Double.parseDouble(aiConfigService.getConfigValue("ai.rag.similarity_threshold"));
+
+    // 知识点检索器（带图片感知装饰器）
+    EmbeddingStoreContentRetriever baseKnowledgeRetriever = EmbeddingStoreContentRetriever.builder()
+            .embeddingStore(embeddingStore)
+            .embeddingModel(this.embeddingModel)
+            .maxResults(topK)
+            .minScore(minScore)
+            .build();
+    ImageAwareContentRetriever knowledgeRetriever =
+            new ImageAwareContentRetriever(baseKnowledgeRetriever);
+
+    // 题目检索器
+    EmbeddingStoreContentRetriever questionRetriever = EmbeddingStoreContentRetriever.builder()
+            .embeddingStore(questionEmbeddingStore)
+            .embeddingModel(this.embeddingModel)
+            .maxResults(topK)
+            .minScore(minScore)
+            .build();
+
+    return DefaultRetrievalAugmentor.builder()
+            .queryRouter(new DefaultQueryRouter(knowledgeRetriever, questionRetriever))
+            .queryTransformer(new QueryRewriteTransformer(queryRewriter))       // Query Rewrite
+            .contentAggregator(new RerankingContentAggregator(rerankService, topK)) // Rerank
+            .build();
+}
 ```
+
+三个扩展点的执行顺序：`queryTransformer`（改写 query）→ `queryRouter`（路由到多个 retriever）→ `contentAggregator`（合并 + 精排）。
 
 ---
 
-### 2.3 Query Rewrite 实现方案
+### 2.3 Query Rewrite 实现（已落地）
 
 #### 2.3.1 设计思路
 
 用一个便宜快速的模型（如 `qwen-turbo`）将用户口语化 query 改写为信息更丰富的检索 query。改写模型的 Prompt 固定且简单，不需要 RAG 和记忆。
 
-#### 2.3.2 新增文件
+实际接入方式：通过 LangChain4j 的 `QueryTransformer` 扩展点，在 `buildRetrievalAugmentor()` 中注册 `QueryRewriteTransformer`，自动作用于所有检索路径。
+
+#### 2.3.2 文件清单
 
 ```
 src/main/java/com/XI/xi_oj/ai/rag/
-├── OJKnowledgeRetriever.java    ← 已有，修改
-├── QueryRewriter.java            ← 新增
+├── QueryRewriter.java              ← 核心改写逻辑 + 模型管理
+├── QueryRewriteTransformer.java    ← LangChain4j QueryTransformer 适配器
 └── ...
 ```
 
-#### 2.3.3 QueryRewriter 实现
+#### 2.3.3 QueryRewriteTransformer（适配器）
 
 ```java
-package com.XI.xi_oj.ai.rag;
+@RequiredArgsConstructor
+public class QueryRewriteTransformer implements QueryTransformer {
 
-import com.XI.xi_oj.utils.TimeUtil;
-import dev.langchain4j.model.chat.ChatModel;
-import jakarta.annotation.Resource;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.stereotype.Component;
-import org.springframework.util.DigestUtils;
-import java.nio.charset.StandardCharsets;
+    private final QueryRewriter queryRewriter;
 
+    @Override
+    public Collection<Query> transform(Query query) {
+        String rewritten = queryRewriter.rewrite(query.text());
+        if (rewritten == null || rewritten.isBlank() || rewritten.equals(query.text())) {
+            return List.of(query);
+        }
+        return List.of(Query.from(rewritten, query.metadata()));
+    }
+}
+```
+
+实现 LangChain4j 的 `QueryTransformer` 接口，将改写逻辑桥接到 RAG pipeline。改写失败或无变化时返回原始 query，保证降级安全。
+
+#### 2.3.4 QueryRewriter（核心实现）
+
+```java
 @Component
 @Slf4j
 public class QueryRewriter {
 
-    private static final String REWRITE_PROMPT = """
-            你是一个搜索查询优化器。请将用户的口语化问题改写为更适合语义检索的描述。
-            要求：
-            1. 保留用户的核心意图，不要改变含义；
-            2. 补充相关的专业术语和关键词；
-            3. 展开缩写和口语表达；
-            4. 输出一句话，不要解释，不要加前缀。
+    private volatile ChatModel rewriteModel;  // 缓存模型实例，配置变更时重建
 
-            用户问题：%s
-            改写后：""";
-
-    private static final String CACHE_PREFIX = "ai:query:rewrite:";
-    private static final long CACHE_TTL_MINUTES = 120;
-    private static final int MIN_QUERY_LENGTH = 4;
-
-    @Resource
-    private AiModelHolder aiModelHolder;
-
-    @Resource
-    private StringRedisTemplate redisTemplate;
-
-    /**
-     * 改写用户 query，短 query 才改写，长 query 直接返回。
-     * 改写结果缓存到 Redis，避免重复调用模型。
-     */
-    public String rewrite(String originalQuery) {
-        if (originalQuery == null || originalQuery.isBlank()) {
-            return originalQuery;
-        }
-        // 长 query 信息量已经足够，不需要改写
-        if (originalQuery.length() > 50) {
-            return originalQuery;
-        }
-        // 极短 query 也不改写（可能是 ID 查询等）
-        if (originalQuery.length() < MIN_QUERY_LENGTH) {
-            return originalQuery;
-        }
-
-        String cacheKey = CACHE_PREFIX + DigestUtils.md5DigestAsHex(
-                originalQuery.getBytes(StandardCharsets.UTF_8));
-        String cached = redisTemplate.opsForValue().get(cacheKey);
-        if (cached != null) {
-            log.debug("[QueryRewrite] cache hit, original={}", originalQuery);
-            return cached;
-        }
-
-        try {
-            String rewritten = aiModelHolder.getRewriteModel().chat(String.format(REWRITE_PROMPT, originalQuery));
-            if (rewritten == null || rewritten.isBlank()) {
-                return originalQuery;
-            }
-            rewritten = rewritten.trim();
-            redisTemplate.opsForValue().set(cacheKey, rewritten,
-                    TimeUtil.minutes(CACHE_TTL_MINUTES));
-            log.info("[QueryRewrite] {} → {}", originalQuery, rewritten);
-            return rewritten;
-        } catch (Exception e) {
-            log.warn("[QueryRewrite] failed, fallback to original query", e);
-            return originalQuery;
-        }
-    }
-}
-```
-
-#### 2.3.4 AiModelHolder 新增 rewriteModel
-
-在 `AiModelHolder` 中新增 `rewriteModel` 的构建和 getter。与现有 `chatModel` 一样，模型名称和参数从 `aiConfigService` 动态读取，配置变更时自动重建：
-
-```java
-// 在 AiModelHolder.java 中新增
-private volatile ChatModel rewriteModel;
-
-@PostConstruct
-public void init() {
-    // ... 现有模型构建
-    this.rewriteModel = buildRewriteModel();
-}
-
-private ChatModel buildRewriteModel() {
-    // 配置项的默认值在 ai_config 表中设置（见第四章 SQL），代码侧不硬编码默认值
-    String modelName = aiConfigService.getConfigValue("ai.rewrite.model_name");
-    float temperature = Float.parseFloat(
-            aiConfigService.getConfigValue("ai.rewrite.temperature"));
-    int maxTokens = Integer.parseInt(
-            aiConfigService.getConfigValue("ai.rewrite.max_tokens"));
-
-    return OpenAiChatModel.builder()
-            .apiKey(apiKey)  // 从数据库解密获取
-            .baseUrl(aiConfigService.getConfigValue("ai.model.base_url"))
-            .modelName(modelName)
-            .temperature((double) temperature)
-            .maxTokens(maxTokens)
-            .build();
-}
-
-public ChatModel getRewriteModel() {
-    return rewriteModel;
-}
-```
-
-同时在 `onConfigChanged()` 的 key 分组中，新增 rewrite 相关 key 的处理：
-
-```java
-// AiModelHolder.onConfigChanged() 中新增
-private static final Set<String> REWRITE_MODEL_KEYS = Set.of(
-        "ai.rewrite.model_name", "ai.rewrite.temperature", "ai.rewrite.max_tokens");
-
-@EventListener
-public void onConfigChanged(AiConfigChangedEvent event) {
-    String key = event.getConfigKey();
-    if (MODEL_NAME_KEYS.contains(key)) {
-        // 全量重建（现有逻辑）
-    } else if (REWRITE_MODEL_KEYS.contains(key)) {
+    @PostConstruct
+    private void init() {
         this.rewriteModel = buildRewriteModel();
-        log.info("[AiModelHolder] rewriteModel rebuilt due to config change: {}", key);
     }
-    // ... 其他分支
+
+    @EventListener
+    public void onConfigChanged(AiConfigChangedEvent event) {
+        String key = event.getConfigKey();
+        if (key.startsWith("ai.rewrite.") || key.equals("ai.provider.api_key_encrypted")
+                || key.equals("ai.model.base_url")) {
+            this.rewriteModel = buildRewriteModel();
+            log.info("[QueryRewriter] rewriteModel rebuilt due to config change: {}", key);
+        }
+    }
+
+    public String rewrite(String originalQuery) {
+        // 长度过滤：< 4 字符或 > 50 字符不改写
+        // Redis 缓存（TTL 2 小时）
+        // 调用 rewriteModel.chat() 改写
+        // sanitize() 清理输出（去前缀、截断、取首行）
+    }
+
+    private ChatModel buildRewriteModel() {
+        // 从 ai_config 读取 api key（AES 解密）、base_url、model_name
+        // 使用 OpenAiChatModel.builder() 构建，temperature=0.1 保证稳定性
+    }
 }
 ```
 
-> 设计说明：`temperature=0.1` 是为了保证改写结果稳定。如果 rewrite 模型输出不稳定（同一 query 每次改写结果不同），会导致下游 RAG 缓存命中率下降。低温度 + Redis 缓存双重保障改写一致性。
+关键设计：
+- **模型实例缓存**：`volatile ChatModel rewriteModel`，避免每次改写都新建模型实例
+- **事件驱动重建**：监听 `AiConfigChangedEvent`，供应商/密钥/改写参数变更时自动重建
+- **自管理模型**：不依赖 `AiModelHolder`，独立管理自己的轻量模型实例，避免循环依赖
+- **输出清理**：`sanitize()` 去除模型可能输出的前缀（"改写后："）、多行内容、超长文本
+- **Redis 缓存**：改写结果缓存 2 小时，相同 query 不重复调用模型
 
-#### 2.3.5 OJKnowledgeRetriever 接入 Query Rewrite
-
-在 `retrieve()` 和 `retrieveByType()` 方法的入口处加入改写：
-
-```java
-// OJKnowledgeRetriever.java 修改
-@Resource
-private QueryRewriter queryRewriter;
-
-public String retrieve(String query, int topK, double minScore) {
-    String rewrittenQuery = queryRewriter.rewrite(query);  // ← 新增
-    String cacheKey = RAG_CACHE_PREFIX + DigestUtils.md5DigestAsHex(
-            (rewrittenQuery + "|" + topK + "|" + minScore)  // ← 用改写后的 query 做 cache key
-                    .getBytes(StandardCharsets.UTF_8));
-    // ... 后续逻辑不变，但用 rewrittenQuery 做 Embedding
-}
-```
-
-#### 2.3.6 Query Rewrite 效果示例
+#### 2.3.5 Query Rewrite 效果示例
 
 | 原始 query | 改写后 |
 |---|---|
@@ -559,7 +499,7 @@ public String retrieve(String query, int topK, double minScore) {
 
 ---
 
-### 2.4 Cross-Encoder Rerank 实现方案
+### 2.4 Cross-Encoder Rerank 实现（已落地）
 
 #### 2.4.1 设计思路
 
@@ -569,149 +509,76 @@ public String retrieve(String query, int topK, double minScore) {
 
 DashScope 提供了 Rerank API（`gte-rerank`），可以直接调用。
 
-#### 2.4.2 新增文件
+实际接入方式：通过 LangChain4j 的 `ContentAggregator` 扩展点，在 `buildRetrievalAugmentor()` 中注册 `RerankingContentAggregator`，自动对所有 Retriever 的合并结果做精排。
+
+#### 2.4.2 文件清单
 
 ```
 src/main/java/com/XI/xi_oj/ai/rag/
-├── OJKnowledgeRetriever.java    ← 已有，修改
-├── QueryRewriter.java            ← 2.3 新增
-├── RerankService.java            ← 新增
+├── RerankService.java              ← 核心 Rerank API 调用
+├── RerankingContentAggregator.java ← LangChain4j ContentAggregator 适配器
 └── ...
 ```
 
-#### 2.4.3 RerankService 实现
+#### 2.4.3 RerankingContentAggregator（适配器）
 
 ```java
-package com.XI.xi_oj.ai.rag;
+@RequiredArgsConstructor
+public class RerankingContentAggregator implements ContentAggregator {
 
-import lombok.Data;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestTemplate;
+    private final RerankService rerankService;
+    private final int fallbackTopN;
+    private final DefaultContentAggregator delegate = new DefaultContentAggregator();
 
-import java.util.*;
-import java.util.stream.Collectors;
+    @Override
+    public List<Content> aggregate(Map<Query, Collection<List<Content>>> queryToContents) {
+        List<Content> merged = delegate.aggregate(queryToContents);  // 先用默认策略合并
+        String query = queryToContents.keySet().stream()
+                .findFirst().map(Query::text).orElse("");
+        return rerankService.rerank(query, merged, rerankService.topN(fallbackTopN));  // 再精排
+    }
+}
+```
 
+先委托 `DefaultContentAggregator` 合并多个 Retriever 的结果，再调用 `RerankService` 精排。这样 Rerank 自动作用于 `oj_knowledge` + `oj_question` 的合并结果。
+
+#### 2.4.4 RerankService（核心实现）
+
+```java
 @Component
 @Slf4j
 public class RerankService {
 
-    @Value("${ai.encrypt.key}")
-    private String encryptKey;  // AES 密钥，用于解密数据库中的 API Key
-
-    private static final String RERANK_URL =
+    private static final String DEFAULT_ENDPOINT =
             "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank";
-    private static final String RERANK_MODEL = "gte-rerank";
+    private static final int MAX_DOCUMENT_CHARS = 1800;
 
-    private final RestTemplate restTemplate;
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(3)).build();
 
-    public RerankService() {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(5_000);   // 连接超时 5s
-        factory.setReadTimeout(10_000);     // 读取超时 10s
-        this.restTemplate = new RestTemplate(factory);
+    public boolean enabled() {
+        return Boolean.parseBoolean(config("ai.rerank.enabled", "false"));
     }
 
-    /**
-     * 对候选文档列表做精排，返回按相关性降序排列的文档。
-     *
-     * @param query      用户查询
-     * @param documents  候选文档列表
-     * @param topN       精排后取前 N 个
-     * @return 精排后的文档列表（已截断为 topN）
-     */
-    public List<String> rerank(String query, List<String> documents, int topN) {
-        if (documents == null || documents.isEmpty()) {
-            return Collections.emptyList();
+    public List<Content> rerank(String query, List<Content> contents, int topN) {
+        if (!enabled() || contents == null || contents.size() <= 1) {
+            return limit(contents, topN);  // 未启用或结果太少，直接截断返回
         }
-        if (documents.size() <= topN) {
-            return documents;
-        }
-
-        try {
-            return doRerank(query, documents, topN);
-        } catch (Exception e) {
-            log.warn("[Rerank] API call failed, fallback to original order", e);
-            return documents.stream().limit(topN).collect(Collectors.toList());
-        }
-    }
-
-    private List<String> doRerank(String query, List<String> documents, int topN) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("Authorization", "Bearer " + getDecryptedApiKey());
-
-        Map<String, Object> body = new HashMap<>();
-        body.put("model", RERANK_MODEL);
-
-        Map<String, Object> input = new HashMap<>();
-        input.put("query", query);
-        input.put("documents", documents);
-        body.put("input", input);
-
-        Map<String, Object> parameters = new HashMap<>();
-        parameters.put("top_n", topN);
-        parameters.put("return_documents", false);
-        body.put("parameters", parameters);
-
-        ResponseEntity<Map> response = restTemplate.exchange(
-                RERANK_URL, HttpMethod.POST,
-                new HttpEntity<>(body, headers), Map.class);
-
-        Map responseBody = response.getBody();
-        if (responseBody == null || !responseBody.containsKey("output")) {
-            log.warn("[Rerank] unexpected response: {}", responseBody);
-            return documents.stream().limit(topN).collect(Collectors.toList());
-        }
-
-        Map output = (Map) responseBody.get("output");
-        List<Map> results = (List<Map>) output.get("results");
-
-        return results.stream()
-                .sorted(Comparator.comparingDouble(r ->
-                        -((Number) r.get("relevance_score")).doubleValue()))
-                .map(r -> documents.get(((Number) r.get("index")).intValue()))
-                .limit(topN)
-                .collect(Collectors.toList());
+        // 1. 提取文本 + 截断保护（MAX_DOCUMENT_CHARS）
+        // 2. 构建 DashScope Rerank API 请求（Hutool JSONUtil）
+        // 3. 调用 API，解析 relevance_score + index
+        // 4. 按 score 降序排列，取 topN
+        // 5. 失败时 fallback 到原始顺序截断
     }
 }
 ```
 
-#### 2.4.4 OJKnowledgeRetriever 接入 Rerank
-
-修改 `doRetrieve()` 方法，在向量检索后加入精排：
-
-```java
-// OJKnowledgeRetriever.java 修改
-@Resource
-private RerankService rerankService;
-
-public String doRetrieve(String query, int topK, double minScore) {
-    Embedding queryEmbedding = aiModelHolder.getEmbeddingModel().embed(query).content();
-    EmbeddingSearchRequest searchRequest = EmbeddingSearchRequest.builder()
-            .queryEmbedding(queryEmbedding)
-            .maxResults(topK * 3)       // ← 粗排多取（原来是 topK）
-            .minScore(minScore)
-            .build();
-
-    List<String> candidates = embeddingStore.search(searchRequest).matches().stream()
-            .filter(match -> match.score() >= minScore)
-            .map(EmbeddingMatch::embedded)
-            .map(TextSegment::text)
-            .collect(Collectors.toList());
-
-    if (candidates.isEmpty()) {
-        return "无相关知识点";
-    }
-
-    // ← 新增：Cross-Encoder 精排
-    List<String> reranked = rerankService.rerank(query, candidates, topK);
-    return String.join("\n\n", reranked);
-}
-```
+关键设计：
+- **操作 `List<Content>` 而非 `List<String>`**：rerank 后 metadata（`image_urls`、`question_id`）不会丢失
+- **开关控制**：`ai.rerank.enabled` 配置项，可在后台一键关闭 Rerank
+- **截断保护**：每个 document 最多 1800 字符，避免超出 Rerank API 限制
+- **全链路降级**：API 调用失败、未启用、结果太少等场景都 fallback 到原始顺序截断
+- **JDK HttpClient**：使用 `java.net.http.HttpClient`，连接超时 3s，读取超时 8s
 
 #### 2.4.5 Rerank 前后对比（示意）
 
@@ -849,19 +716,18 @@ flowchart TD
 
 ---
 
-### 2.6 方向 B 实施顺序与改动清单
+### 2.6 方向 B 实施状态
 
-| 步骤 | 改动文件 | 改动类型 | 说明 |
+| 步骤 | 改动文件 | 状态 | 说明 |
 |---|---|---|---|
-| 1 | `AiModelHolder.java` | 修改 | 新增 `rewriteModel` 构建和 getter |
-| 2 | `QueryRewriter.java` | 新增 | Query Rewrite 组件 |
-| 3 | `OJKnowledgeRetriever.java` | 修改 | 接入 QueryRewriter |
-| 4 | 跑评估基线 | 测试 | 记录优化前指标 |
-| 5 | `RerankService.java` | 新增 | Cross-Encoder Rerank 组件 |
-| 6 | `OJKnowledgeRetriever.java` | 修改 | 接入 RerankService |
-| 7 | `RagEvaluationTest.java` | 新增 | 离线评估脚本 |
-| 8 | `eval/rag_eval_cases.json` | 新增 | 评估数据集 |
-| 9 | 跑优化后评估 | 测试 | 对比优化前后指标 |
+| 1 | `QueryRewriter.java` | ✅ 已完成 | Query Rewrite 核心逻辑 + 模型缓存 + 事件重建 |
+| 2 | `QueryRewriteTransformer.java` | ✅ 已完成 | LangChain4j QueryTransformer 适配器 |
+| 3 | `RerankService.java` | ✅ 已完成 | Cross-Encoder Rerank（DashScope API） |
+| 4 | `RerankingContentAggregator.java` | ✅ 已完成 | LangChain4j ContentAggregator 适配器 |
+| 5 | `AiModelHolder.buildRetrievalAugmentor()` | ✅ 已完成 | 组装 pipeline（QueryTransformer + QueryRouter + ContentAggregator） |
+| 6 | `RagEvaluationTest.java` | 待开发 | 离线评估脚本 |
+| 7 | `eval/rag_eval_cases.json` | 待开发 | 评估数据集 |
+| 8 | 跑评估 | 待执行 | 量化 Recall@K / MRR 指标 |
 
 ---
 
@@ -916,16 +782,18 @@ flowchart TD
 ```
 src/main/java/com/XI/xi_oj/ai/agent/
 ├── OJChatAgent.java              ← 已有，保留（作为简单模式的兼容）
-├── AgentLoopService.java          ← 新增：自定义推理循环
+├── AgentLoopService.java          ← 新增：自定义推理循环（run + runStreaming）
 ├── ToolDispatcher.java            ← 新增：工具分发与执行
 ├── AgentStep.java                 ← 新增：单步推理记录
-└── AgentLoopConfig.java           ← 新增：循环参数配置
 
-src/main/java/com/XI/xi_oj/ai/model/
-└── AgentTraceLog.java             ← 新增：决策链路日志
+src/main/java/com/XI/xi_oj/model/entity/
+└── AgentTraceLog.java             ← 新增：决策链路日志实体
 
 src/main/java/com/XI/xi_oj/mapper/
 └── AgentTraceLogMapper.java       ← 新增：日志持久化
+
+src/main/java/com/XI/xi_oj/service/impl/
+└── AgentTraceService.java         ← 新增：异步写入 trace 日志
 ```
 
 #### 3.3.2 AgentStep — 单步推理记录
@@ -1026,6 +894,22 @@ public class ToolDispatcher {
                     ojTools.queryUserSubmitHistory(
                             toLong(params.get("userId")),
                             toLong(params.get("questionId")));
+            case "query_user_mastery" ->
+                    ojTools.queryUserMastery(
+                            toLong(params.get("userId")));
+            case "get_question_hints" ->
+                    ojTools.getQuestionHints(
+                            toLong(params.get("questionId")),
+                            toInt(params.get("hintLevel")));
+            case "run_custom_test" ->
+                    ojTools.runCustomTest(
+                            toLong(params.get("questionId")),
+                            (String) params.get("code"),
+                            (String) params.get("language"),
+                            (String) params.get("customInput"));
+            case "diagnose_error_pattern" ->
+                    ojTools.diagnoseErrorPattern(
+                            toLong(params.get("userId")));
             default -> throw new IllegalArgumentException("未知工具: " + toolName);
         };
     }
@@ -1035,6 +919,13 @@ public class ToolDispatcher {
         if (value instanceof Number n) return n.longValue();
         if (value instanceof String s) return Long.parseLong(s);
         throw new IllegalArgumentException("无法转换为 Long: " + value);
+    }
+
+    private int toInt(Object value) {
+        if (value instanceof Integer i) return i;
+        if (value instanceof Number n) return n.intValue();
+        if (value instanceof String s) return Integer.parseInt(s);
+        throw new IllegalArgumentException("无法转换为 int: " + value);
     }
 
     private void sleep(long ms) {
@@ -1054,175 +945,173 @@ public class ToolDispatcher {
 
 #### 3.3.4 AgentLoopService — 自定义推理循环（核心）
 
+`AgentLoopService` 提供两个入口方法：
+
+- **`run()`**：同步执行，返回 `AgentResult`（用于非流式 `/ai/chat` 接口）。
+- **`runStreaming()`**：流式执行，通过 `FluxSink<String>` 逐 token 推送（用于 SSE `/ai/chat/stream` 接口）。
+
+两个方法共享同一套 ReAct 循环逻辑，区别在于 LLM 调用方式和结果推送方式。
+
+**关键设计（相比初版的演进）：**
+
+1. **自带 RAG 检索**：Agent Loop 不依赖 AiServices 的 `RetrievalAugmentor`，而是在循环开始前自行调用 `QueryRewriter` → `OJKnowledgeRetriever` → `RerankService` 完成检索，将结果作为 `UserMessage` 注入对话历史。
+2. **System Prompt 可配置**：通过 `ai.prompt.agent_system` 配置项动态读取，支持运行时调整。
+3. **`LinkValidationFilter` 后置校验**：最终回答经过链接真实性校验，剥离不存在的题目链接。
+4. **`maxSteps` 动态读取**：从 `ai.agent.max_steps` 配置项读取，默认 6。
+5. **流式推送**：`runStreaming()` 通过 `[STATUS]` 前缀推送中间状态事件，最终回答通过 `StreamingChatModel` 逐 token 推送。
+
 ```java
 package com.XI.xi_oj.ai.agent;
 
-import cn.hutool.json.JSONObject;
-import cn.hutool.json.JSONUtil;
-import dev.langchain4j.data.message.*;
-import dev.langchain4j.model.chat.ChatModel;
-import dev.langchain4j.model.chat.response.ChatResponse;
-import jakarta.annotation.Resource;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+// 省略 import（完整代码见源文件）
 
 @Service
 @Slf4j
 public class AgentLoopService {
 
-    private static final int MAX_STEPS = 6;
+    @Resource private AiModelHolder aiModelHolder;
+    @Resource private ToolDispatcher toolDispatcher;
+    @Resource private AiConfigService aiConfigService;
+    @Resource private QueryRewriter queryRewriter;
+    @Resource private OJKnowledgeRetriever ojKnowledgeRetriever;
+    @Resource private RerankService rerankService;
+    @Resource private LinkValidationFilter linkValidationFilter;
 
-    private static final String SYSTEM_PROMPT = """
-            你是 XI OJ 平台的智能编程助教。你可以使用以下工具：
-
-            1. query_question_info(keyword) - 按关键词或 ID 查询题目信息
-            2. judge_user_code(userId, questionId, code, language) - 提交代码判题
-            3. query_user_wrong_question(userId, questionId) - 查询某道题的错题记录
-            4. search_questions(keyword, tag, difficulty) - 按关键词/标签/难度搜索题目列表
-            5. find_similar_questions(questionId) - 基于向量检索查找相似题目
-            6. list_user_wrong_questions(userId) - 查询用户所有错题列表
-            7. query_user_submit_history(userId, questionId) - 查询用户提交历史
-
-            每次回复必须严格使用以下格式之一：
-
-            【需要调用工具时】
-            Thought: <你的思考过程>
-            Action: <工具名>
-            ActionInput: <JSON 格式参数>
-
-            【可以直接回答时】
-            Thought: <你的思考过程>
-            Answer: <最终回答>
-
-            规则：
-            - 每次只调用一个工具，等待结果后再决定下一步。
-            - 如果工具返回了错误信息，分析原因后决定是否换一种方式尝试。
-            - 最多执行 %d 步，如果信息不足也要基于已有信息给出最佳回答。
-            - 回答语言为中文，不直接给出完整可运行代码。
-            """.formatted(MAX_STEPS);
-
-    @Resource
-    private AiModelHolder aiModelHolder;
-
-    @Resource
-    private ToolDispatcher toolDispatcher;
-
-    /**
-     * 执行自定义 Agent 推理循环。
-     * 使用 LangChain4j 的 ChatMessage 列表维护对话历史，确保 SystemMessage 角色信息正确传递。
-     */
+    // 同步入口
     public AgentResult run(String userQuery, Long userId) {
+        int maxSteps = maxSteps();
         List<AgentStep> steps = new ArrayList<>();
-        // 使用 ChatMessage 列表而非字符串拼接，保证消息角色（system/user/ai）正确传递给模型
         List<ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from(SYSTEM_PROMPT));
+
+        String systemPrompt = aiConfigService.getPrompt("ai.prompt.agent_system", DEFAULT_AGENT_SYSTEM_PROMPT);
+        messages.add(SystemMessage.from(systemPrompt.formatted(maxSteps)));
+
+        // 自行完成 RAG 检索（QueryRewrite → 向量检索 → Rerank）
+        String ragContext = retrieveRagContext(userQuery);
+        if (!ragContext.isBlank()) {
+            messages.add(UserMessage.from("以下是从知识库检索到的相关资料，请参考：\n\n" + ragContext));
+        }
         messages.add(UserMessage.from(userQuery));
 
         ChatModel chatModel = aiModelHolder.getChatModel();
-
-        for (int i = 0; i < MAX_STEPS; i++) {
-            long stepStart = System.currentTimeMillis();
-
-            // 1. 调用 LLM（传入完整的 ChatMessage 列表）
-            ChatResponse response = chatModel.chat(messages);
-            String llmOutput = response.aiMessage().text();
-            messages.add(AiMessage.from(llmOutput));
-
-            // 2. 解析输出
-            String thought = extractBlock(llmOutput, "Thought:");
-            String action = extractBlock(llmOutput, "Action:");
-            String actionInput = extractBlock(llmOutput, "ActionInput:");
-            String answer = extractBlock(llmOutput, "Answer:");
-
-            // 3. 如果有最终回答，结束循环
-            if (answer != null && !answer.isBlank()) {
-                steps.add(AgentStep.builder()
-                        .stepIndex(i + 1)
-                        .thought(thought)
-                        .durationMs(System.currentTimeMillis() - stepStart)
-                        .build());
-                return AgentResult.of(answer, steps);
-            }
-
-            // 4. 如果有工具调用，执行工具
-            if (action != null && !action.isBlank()) {
-                Map<String, Object> params = parseToolParams(actionInput, userId);
-                ToolDispatcher.ToolResult toolResult =
-                        toolDispatcher.execute(action.trim(), params);
-
-                steps.add(AgentStep.builder()
-                        .stepIndex(i + 1)
-                        .thought(thought)
-                        .toolName(action.trim())
-                        .toolInput(actionInput)
-                        .toolOutput(toolResult.output())
-                        .toolSuccess(toolResult.success())
-                        .retryCount(toolResult.retryCount())
-                        .durationMs(System.currentTimeMillis() - stepStart)
-                        .build());
-
-                // 5. 将工具结果作为 UserMessage 追加（模拟 Observation 角色）
-                messages.add(UserMessage.from("Observation: " + toolResult.output()));
-            } else {
-                // LLM 输出格式异常，记录并提示重试
-                steps.add(AgentStep.builder()
-                        .stepIndex(i + 1)
-                        .thought("格式解析失败: " + llmOutput)
-                        .durationMs(System.currentTimeMillis() - stepStart)
-                        .build());
-                messages.add(UserMessage.from(
-                        "请严格按照格式回复，使用 Thought/Action/Answer。"));
-            }
+        for (int i = 0; i < maxSteps; i++) {
+            // ... ReAct 循环（解析 Thought/Action/Answer，执行工具，记录 AgentStep）
         }
-
-        // 超过最大步数，强制要求总结
-        messages.add(UserMessage.from("已达到最大推理步数，请基于已有信息给出最终回答。"));
-        ChatResponse forceResponse = chatModel.chat(messages);
-        String forceOutput = forceResponse.aiMessage().text();
-        String forceAnswer = extractBlock(forceOutput, "Answer:");
-        return AgentResult.of(forceAnswer != null ? forceAnswer : forceOutput, steps);
+        // 超过最大步数，强制总结
+        return AgentResult.of(forceAnswer, steps);
     }
 
-    private String extractBlock(String text, String prefix) {
-        int start = text.indexOf(prefix);
-        if (start < 0) return null;
-        start += prefix.length();
-        int end = text.length();
-        // 找到下一个已知前缀的位置作为结束
-        for (String nextPrefix : List.of("Thought:", "Action:", "ActionInput:", "Answer:", "Observation:")) {
-            int nextStart = text.indexOf(nextPrefix, start);
-            if (nextStart > start && nextStart < end) {
-                end = nextStart;
-            }
-        }
-        return text.substring(start, end).trim();
+    // 流式入口（SSE 推送）
+    public void runStreaming(String userQuery, Long userId, FluxSink<String> sink,
+                             Consumer<AgentResult> onComplete) {
+        // 1. 构建消息历史（同 run()，含 RAG 检索）
+        // 2. ReAct 循环中，每一步通过 sink.next("[STATUS]...") 推送状态事件
+        // 3. LLM 调用使用 streamStep()，支持 Answer 部分逐 token 推送
+        // 4. 最终回答经 LinkValidationFilter 校验
+        // 5. 循环结束后 sink.complete()，通过 onComplete 回调传出 AgentResult
     }
 
-    private Map<String, Object> parseToolParams(String actionInput, Long userId) {
-        if (actionInput == null || actionInput.isBlank()) {
-            return Map.of("userId", userId);
-        }
-        try {
-            JSONObject json = JSONUtil.parseObj(actionInput);
-            Map<String, Object> params = new java.util.HashMap<>(json);
-            params.put("userId", userId);  // 始终注入当前用户 ID
-            return params;
-        } catch (Exception e) {
-            return Map.of("keyword", actionInput.trim(), "userId", userId);
-        }
+    // 流式单步调用（状态机：BUFFERING → STREAMING_ANSWER）
+    private String streamStep(StreamingChatModel streamingModel, ChatModel chatModel,
+                              List<ChatMessage> messages, FluxSink<String> sink,
+                              StringBuilder answerBuffer) {
+        // StreamingChatModel 为 null 时退化为同步 ChatModel + emitChunked
+        // 否则使用 StreamingChatResponseHandler + CountDownLatch 桥接
+        // Thought/Action 部分缓冲不推送，检测到 Answer: 后切换为逐 token 推送
     }
 
-    public record AgentResult(String answer, List<AgentStep> steps) {
-        static AgentResult of(String answer, List<AgentStep> steps) {
-            return new AgentResult(answer, steps);
+    // RAG 检索：QueryRewrite → 向量检索 → Rerank
+    private String retrieveRagContext(String query) {
+        String rewritten = queryRewriter.rewrite(query);
+        List<Content> contents = ojKnowledgeRetriever.retrieveAsContents(rewritten, topK, minScore);
+        if (rerankService.enabled() && contents.size() > 1) {
+            contents = rerankService.rerank(rewritten, contents, topK);
         }
+        return contents.stream().map(c -> formatSegmentWithImages(c.textSegment()))
+                .collect(Collectors.joining("\n\n"));
     }
+
+    public record AgentResult(String answer, List<AgentStep> steps) { ... }
 }
 ```
+
+> **完整源码**见 `src/main/java/com/XI/xi_oj/ai/agent/AgentLoopService.java`，此处展示核心结构。
+
+**`runStreaming()` 的流式推送时序：**
+
+```mermaid
+sequenceDiagram
+    participant FE as 前端
+    participant Ctrl as AiChatController
+    participant Svc as AiChatServiceImpl
+    participant Agent as AgentLoopService
+    participant LLM as StreamingChatModel
+
+    FE->>Ctrl: POST /ai/chat/stream
+    Ctrl->>Svc: chatStream()
+    Svc->>Svc: Flux.create(sink -> virtualThread)
+    Svc->>Agent: runStreaming(query, userId, sink, onComplete)
+    Agent->>Agent: retrieveRagContext()
+    Agent-->>FE: [STATUS]正在检索知识库...
+    loop ReAct 循环
+        Agent-->>FE: [STATUS]正在思考（第 N/M 步）...
+        Agent->>LLM: streamStep()
+        Note over Agent,LLM: 缓冲 Thought/Action 部分<br/>检测到 Answer: 后切换为直接推送
+        LLM-->>FE: token1, token2, token3...（逐 token）
+        alt 需要调用工具
+            Agent-->>FE: [STATUS]正在调用工具: xxx
+            Agent->>Agent: toolDispatcher.execute()
+            Agent-->>FE: [STATUS]工具调用完成，继续分析...
+        end
+    end
+    Agent-->>FE: sink.complete()
+    Agent->>Svc: onComplete(AgentResult)
+    Svc->>Svc: saveTraceAsync + saveRecordAsync
+```
+
+**`streamStep()` 状态机核心逻辑：**
+
+用 `CountDownLatch` 将 `StreamingChatResponseHandler` 的异步回调桥接到同步的 ReAct 循环。Thought/Action 部分在 `pendingBuffer` 中积累（不推送给前端），检测到 `Answer:` 标记后切换为逐 token 直接 `sink.next()` 推送。这样中间推理步骤不会泄露给用户，只有最终回答是流式的。
+
+**`AiChatServiceImpl.chatStream()` 的 advanced 分支：**
+
+```java
+if (isAdvancedAgentMode()) {
+    return Flux.<String>create(sink -> {
+        Thread.startVirtualThread(() -> {
+            OJTools.setCurrentUserId(userId);
+            try {
+                agentLoopService.runStreaming(enrichedMessage, userId, sink, result -> {
+                    agentTraceService.saveTraceAsync(userId, chatId, message, result.steps());
+                    aiChatAsyncService.saveRecordAsync(userId, chatId, message, result.answer());
+                });
+            } catch (Exception e) { sink.error(e); }
+            finally { OJTools.clearCurrentUserId(); }
+        });
+    });
+}
+```
+
+用虚拟线程包装，因为 `runStreaming()` 内部有同步阻塞调用（`CountDownLatch.await()`、`ToolDispatcher.execute()`），不能阻塞 Reactor 线程。
+
+**`AiChatController.chatStream()` 的 status 事件区分：**
+
+```java
+.map(token -> {
+    if (token != null && token.startsWith("[STATUS]")) {
+        String statusText = token.substring("[STATUS]".length());
+        return ServerSentEvent.<String>builder()
+                .event("status")
+                .data(toJson(singletonPayload("d", statusText)))
+                .build();
+    }
+    return ServerSentEvent.<String>builder()
+            .data(toJson(singletonPayload("d", token)))
+            .build();
+})
+```
+
+`[STATUS]` 前缀的 token 转为 `event: status` SSE 事件，前端 `sse.ts` 的 `onStatus` 回调接收并显示为加载状态文本。
 
 ### 3.4 Agent 可观测性 — 决策链路日志
 
@@ -1251,15 +1140,23 @@ CREATE TABLE ai_agent_trace_log (
 
 #### 3.4.2 日志写入时机
 
-在 `AgentLoopService.run()` 返回后，异步写入所有 steps：
+**同步模式（`run()`）**：在 `AgentLoopService.run()` 返回后，异步写入所有 steps：
 
 ```java
-// AiChatServiceImpl.java 中调用
+// AiChatServiceImpl.chat() 中调用
 AgentLoopService.AgentResult result = agentLoopService.run(message, userId);
-// 异步写入链路日志
 agentTraceService.saveTraceAsync(userId, chatId, message, result.steps());
-// 返回最终回答
 return result.answer();
+```
+
+**流式模式（`runStreaming()`）**：通过 `onComplete` 回调在流结束后异步写入：
+
+```java
+// AiChatServiceImpl.chatStream() 中调用
+agentLoopService.runStreaming(enrichedMessage, userId, sink, result -> {
+    agentTraceService.saveTraceAsync(userId, chatId, message, result.steps());
+    aiChatAsyncService.saveRecordAsync(userId, chatId, message, result.answer());
+});
 ```
 
 #### 3.4.3 可观测性价值
@@ -1308,9 +1205,9 @@ flowchart TD
 
 通过 `ai_config` 表的 `ai.agent.mode` 配置项切换：
 - `simple`：使用现有 `OJChatAgent`（AiServices 自动调度），支持流式输出，稳定兜底。
-- `advanced`：使用 `AgentLoopService`（自定义循环），功能更强，但当前版本为同步返回，不支持流式输出。
+- `advanced`：使用 `AgentLoopService`（自定义循环），功能更强，**已支持流式输出**（`runStreaming()` + `StreamingChatModel`）。
 
-> **Streaming 限制说明**：现有 `OJStreamingService` 和 `chatStream` 基于 AiServices 的流式能力实现。`AgentLoopService` 当前是同步的 `run()` 方法，不支持 streaming。如果需要在 advanced 模式下支持流式，需要后续将 Agent Loop 改造为基于 `StreamingChatModel` 的异步实现，逐步将每一步的 Thought 和最终 Answer 流式推送给前端。这是一个已知的功能差异，灰度切换时需要注意。
+> **Streaming 实现说明**：`AgentLoopService.runStreaming()` 通过 `FluxSink<String>` 推送两类事件：中间步骤状态（`[STATUS]` 前缀）和最终回答（逐 token）。`AiChatServiceImpl.chatStream()` 在 advanced 分支使用 `Flux.create()` + 虚拟线程包装，`AiChatController` 将 `[STATUS]` 前缀转为 `event: status` SSE 事件。前端 `sse.ts` 的 `onStatus` 回调接收状态文本并显示为加载指示器。
 
 这样可以灰度切换，不影响线上稳定性。
 
@@ -1318,15 +1215,18 @@ flowchart TD
 
 ### 3.6 方向 A 实施顺序与改动清单
 
-| 步骤 | 改动文件 | 改动类型 | 说明 |
-|---|---|---|---|
-| 1 | `AgentStep.java` | 新增 | 单步推理记录模型 |
-| 2 | `ToolDispatcher.java` | 新增 | 工具分发 + 重试 + 容错 |
-| 3 | `AgentLoopService.java` | 新增 | 自定义 ReAct 推理循环（通过 `AiModelHolder` 获取模型） |
-| 4 | `ai_agent_trace_log` 表 | 新增 SQL | 决策链路日志表 |
-| 5 | `AgentTraceLog.java` + Mapper | 新增 | 日志实体和持久化 |
-| 6 | `AiChatServiceImpl.java` | 修改 | 根据配置切换 simple/advanced 模式 |
-| 7 | `ai_config` 表 | 插入数据 | 新增 `ai.agent.mode` 配置项 |
+| 步骤 | 改动文件 | 改动类型 | 状态 | 说明 |
+|---|---|---|---|---|
+| 1 | `AgentStep.java` | 新增 | ✅ 已完成 | 单步推理记录模型 |
+| 2 | `ToolDispatcher.java` | 新增 | ✅ 已完成 | 工具分发 + 重试 + 容错 |
+| 3 | `AgentLoopService.java` | 新增 | ✅ 已完成 | 自定义 ReAct 推理循环 + 流式推送（`run()` + `runStreaming()`） |
+| 4 | `ai_agent_trace_log` 表 | 新增 SQL | ✅ 已完成 | 决策链路日志表 |
+| 5 | `AgentTraceLog.java` + Mapper + Service | 新增 | ✅ 已完成 | 日志实体、持久化、异步写入 |
+| 6 | `AiChatServiceImpl.java` | 修改 | ✅ 已完成 | 根据配置切换 simple/advanced 模式，advanced 支持流式 |
+| 7 | `AiChatController.java` | 修改 | ✅ 已完成 | `[STATUS]` 前缀转 `event: status` SSE 事件 |
+| 8 | `ai_config` 表 | 插入数据 | ✅ 已完成 | 新增 `ai.agent.mode`、`ai.agent.max_steps` 配置项 |
+| 9 | `sse.ts` | 修改 | ✅ 已完成 | 新增 `onStatus` 回调处理 status 事件 |
+| 10 | `AiChatView.vue` + `AiChatWidget.vue` | 修改 | ✅ 已完成 | 显示 Agent 状态指示器 |
 
 ---
 
@@ -1382,11 +1282,11 @@ INSERT INTO ai_config (config_key, config_value, description, is_enable) VALUES
 
 ### 4.4 执行顺序建议
 
-| 顺序 | SQL | 时机 |
-|---|---|---|
-| 1 | 4.1 Query Rewrite + Rerank 配置 | 方向 B 开发前 |
-| 2 | 4.2 ai_agent_trace_log 建表 | 方向 A 开发前 |
-| 3 | 4.3 Agent 模式配置 | 方向 A 开发前 |
+| 顺序 | SQL | 时机 | 状态 |
+|---|---|---|---|
+| 1 | 4.1 Query Rewrite + Rerank 配置 | 方向 B 开发前 | ✅ 已执行 |
+| 2 | 4.2 ai_agent_trace_log 建表 | 方向 A 开发前 | ✅ 已执行 |
+| 3 | 4.3 Agent 模式配置 | 方向 A 开发前 | ✅ 已执行 |
 
 ---
 
@@ -1394,11 +1294,11 @@ INSERT INTO ai_config (config_key, config_value, description, is_enable) VALUES
 
 ### 5.1 RAG 优化怎么讲
 
-> "我们的 RAG 做了三层优化。第一层 Query Rewrite，用轻量模型把用户口语化的短 query 改写成信息更丰富的检索 query，比如'二分怎么写'改写成'二分查找算法实现思路与边界处理'，改写模型的名称和参数都走动态配置，可以在后台热切换，改写结果缓存到 Redis 避免重复调用。第二层 Cross-Encoder Rerank，向量检索先粗排取 Top10，再用 DashScope 的 gte-rerank 模型精排取 Top3，过滤掉语义相似但实际不相关的结果。第三层是离线评估，我用现有题目标签构造了评估集，跑 Recall@5 和 MRR 指标，Query Rewrite 让 Recall@5 从 0.6x 提升到 0.7x，加上 Rerank 进一步提升到 0.8x。"
+> "我们的 RAG 做了三层优化，全部通过 LangChain4j 的原生扩展点接入 pipeline，不侵入检索器代码。第一层 Query Rewrite，实现了 `QueryTransformer` 接口，用轻量模型把用户口语化的短 query 改写成信息更丰富的检索 query，比如'二分怎么写'改写成'二分查找算法实现思路与边界处理'，改写模型实例缓存为 volatile 字段、配置变更时事件驱动重建，改写结果缓存到 Redis 避免重复调用。第二层 Cross-Encoder Rerank，实现了 `ContentAggregator` 接口，先用默认策略合并双集合检索结果，再调用 DashScope 的 gte-rerank 模型精排取 TopN，操作的是 `Content` 对象所以 metadata 不会丢失。有开关控制可以一键关闭。第三层是离线评估（待建设），计划用现有题目标签构造评估集，跑 Recall@5 和 MRR 指标量化效果。"
 
 ### 5.2 自定义 Agent Loop 怎么讲
 
-> "我用 LangChain4j 做模型调用和 RAG 检索的基础设施，但 Agent 的推理循环是自己实现的，没有用 AiServices 的自动调度。底层能力复用框架（ChatModel、EmbeddingStore），上层控制逻辑自己掌握。每一步 LLM 输出 Thought + Action，我解析后通过 ToolDispatcher 执行工具（覆盖全部 7 个工具），工具失败会退避重试最多 2 次，超过最大步数会强制要求模型基于已有信息总结回答。对话历史用 LangChain4j 的 ChatMessage 列表维护，保证 system/user/ai 角色信息正确传递。整个推理链路每一步都记录到数据库——思考了什么、选了哪个工具、输入输出是什么、耗时多少——方便线上排查 Agent 行为异常。两套方案通过配置中心切换，可以灰度上线。"
+> "我用 LangChain4j 做模型调用和 RAG 检索的基础设施，但 Agent 的推理循环是自己实现的，没有用 AiServices 的自动调度。底层能力复用框架（ChatModel、EmbeddingStore），上层控制逻辑自己掌握。每一步 LLM 输出 Thought + Action，我解析后通过 ToolDispatcher 执行工具（覆盖全部 11 个工具），工具失败会退避重试最多 2 次，超过最大步数会强制总结。Agent Loop 自带 RAG pipeline（QueryRewrite → 向量检索 → Rerank），不依赖 AiServices 的 RetrievalAugmentor。流式场景下，中间步骤通过 SSE status 事件推送给前端（'正在思考'、'正在调用工具'），最终回答用 StreamingChatModel 逐 token 推送——我用 CountDownLatch 把异步回调桥接到同步的 ReAct 循环，Thought/Action 部分在缓冲区积累不推送，检测到 Answer 标记后切换为直接推送。整个推理链路每一步都记录到数据库，方便线上排查。两套方案通过配置中心切换，可以灰度上线。"
 
 ### 5.3 被追问"为什么不完全脱离 LangChain4j"时怎么答
 
@@ -1408,9 +1308,9 @@ INSERT INTO ai_config (config_key, config_value, description, is_enable) VALUES
 
 ## 六、总结
 
-| 方向 | 核心价值 | 新增文件 | 改动已有文件 | 面试加分点 |
+| 方向 | 核心价值 | 文件 | 状态 | 面试加分点 |
 |---|---|---|---|---|
-| B：RAG 深度优化 | 检索质量可量化提升 | 3 个 | 2 个 | 有数据说话（Recall@K）+ 动态配置 |
-| A：自定义 Agent Loop | 证明理解 Agent 本质和框架分层 | 5 个 | 2 个 | 可观测性 + 容错 + 灰度 + ChatMessage 规范用法 |
+| B：RAG 深度优化 | 检索质量可量化提升 | QueryRewriter / QueryRewriteTransformer / RerankService / RerankingContentAggregator | ✅ 已落地（评估待建设） | LangChain4j 原生扩展点 + 动态配置 + 全链路降级 |
+| A：自定义 Agent Loop | 证明理解 Agent 本质和框架分层 | AgentLoopService / ToolDispatcher / AgentStep / AgentTraceService 等 | ✅ 已落地（含流式推送） | 可观测性 + 容错 + 灰度 + StreamingChatModel 逐 token 推送 + 自带 RAG pipeline |
 
-建议先完成 B（1~2 天），再完成 A（2~3 天），总计一周内可以落地。
+方向 B 已落地，剩余离线评估体系待建设。方向 A 已落地，包含同步 `run()` 和流式 `runStreaming()` 两个入口，支持 SSE 状态事件推送和逐 token 流式回答。

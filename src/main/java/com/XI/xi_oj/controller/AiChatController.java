@@ -55,15 +55,26 @@ public class AiChatController {
         return ResultUtils.success(result);
     }
 
+    private static final String STATUS_PREFIX = "[STATUS]";
+
     @RateLimit(types = {AI_GLOBAL_TOKEN_BUCKET, AI_USER_MINUTE, AI_IP_MINUTE, AI_CHAT_USER_DAY})
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chatStream(@RequestBody @Valid AiChatRequest request,
                                                     HttpServletRequest httpRequest) {
         User loginUser = userService.getLoginUser(httpRequest);
         return aiChatService.chatStream(request.getChatId(), loginUser.getId(), request.getMessage(), request.getQuestionId())
-                .map(token -> ServerSentEvent.<String>builder()
-                        .data(toJson(singletonPayload("d", token == null ? "" : token)))
-                        .build())
+                .map(token -> {
+                    if (token != null && token.startsWith(STATUS_PREFIX)) {
+                        String statusText = token.substring(STATUS_PREFIX.length());
+                        return ServerSentEvent.<String>builder()
+                                .event("status")
+                                .data(toJson(singletonPayload("d", statusText)))
+                                .build();
+                    }
+                    return ServerSentEvent.<String>builder()
+                            .data(toJson(singletonPayload("d", token == null ? "" : token)))
+                            .build();
+                })
                 .concatWith(Flux.just(ServerSentEvent.<String>builder()
                         .data(toJson(singletonPayload("done", true)))
                         .build()))

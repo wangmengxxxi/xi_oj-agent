@@ -10,6 +10,7 @@ interface ChatMessage {
   role: 'user' | 'ai'
   content: string
   loading?: boolean
+  statusText?: string
 }
 
 const props = defineProps<{
@@ -122,15 +123,22 @@ function handleSend() {
     onToken(token) {
       messages.value[aiIdx].content += token
       messages.value[aiIdx].loading = false
+      messages.value[aiIdx].statusText = ''
+      scrollToBottom()
+    },
+    onStatus(msg) {
+      messages.value[aiIdx].statusText = msg
       scrollToBottom()
     },
     onDone() {
       messages.value[aiIdx].loading = false
+      messages.value[aiIdx].statusText = ''
       sending.value = false
       scrollToBottom()
     },
     onError(msg) {
       messages.value[aiIdx].loading = false
+      messages.value[aiIdx].statusText = ''
       sending.value = false
       if (msg.includes('42900') || msg.includes('限') || msg.includes('次数')) {
         rateLimitMsg.value = msg
@@ -211,7 +219,10 @@ onUnmounted(() => {
           <div v-for="(msg, idx) in messages" :key="idx" :class="['msg-row', msg.role]">
             <div class="msg-avatar">{{ msg.role === 'user' ? '我' : 'AI' }}</div>
             <div class="msg-bubble">
-              <a-spin v-if="msg.loading" size="14" />
+              <div v-if="msg.loading" class="agent-status">
+                <a-spin size="14" />
+                <span v-if="msg.statusText" class="status-text">{{ msg.statusText }}</span>
+              </div>
               <MdViewer v-else-if="msg.role === 'ai'" :content="msg.content" />
               <div v-else class="msg-text">{{ msg.content }}</div>
             </div>
@@ -384,6 +395,23 @@ onUnmounted(() => {
 
 .msg-text {
   white-space: pre-wrap;
+}
+
+.agent-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-status .status-text {
+  font-size: 12px;
+  color: #8c8c8c;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .rate-limit-bar {

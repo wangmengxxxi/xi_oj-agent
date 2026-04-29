@@ -6,7 +6,7 @@
 pom_head_restore.xml
 .DS_Store
 **/.DS_Store
-
+.tmp_milvus_jar
 HELP.md
 target/
 !.mvn/wrapper/maven-wrapper.jar

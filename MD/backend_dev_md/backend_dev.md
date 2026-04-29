@@ -59,7 +59,7 @@ flowchart LR
     B --> G[大模型适配层]
     G --> H[通义千问/其他大模型]
 ```
-- **Agent执行引擎**：基于LangChain4j的AgenticServices实现，负责AI的思考、工具调用决策、结果整合，是AIGC层的调度核心；
+- **Agent执行引擎**：基于LangChain4j的AiServices实现（simple 模式），或自定义 `AgentLoopService` ReAct 循环实现（advanced 模式），负责AI的思考、工具调用决策、结果整合，是AIGC层的调度核心；
 - **RAG检索模块**：负责题目、题解、知识点、错题分析的向量检索，为AI提供精准的上下文信息，解决大模型幻觉问题；
 - **工具调用模块**：封装OJ平台的题库查询、代码判题、用户数据查询、错题查询等能力，供Agent按需调用；
 - **大模型适配层**：统一封装大模型调用接口，支持多模型快速切换，兼容国内主流大模型。
@@ -1154,7 +1154,8 @@ flowchart TD
 
 | Bean | 对应模块 | Memory | RAG | Tools | SSE流式 |
 |------|----------|--------|-----|-------|---------|
-| `OJChatAgent` | 5.3 AI问答 | ✅ 多轮记忆 | ✅ | ✅ | ✅ |
+| `OJChatAgent` | 5.3 AI问答（simple 模式） | ✅ 多轮记忆 | ✅ | ✅ 11个工具 | ✅ |
+| `AgentLoopService` | 5.3 AI问答（advanced 模式） | ❌（Service 层管理） | ✅ 自行检索（QueryRewrite+Rerank） | ✅ 11个工具（ToolDispatcher） | ✅ 流式（StreamingChatModel） |
 | `OJQuestionParseAgent` | 5.4 题目解析 | ❌ 单次会话 | ✅ | ❌ | ✅ |
 | `OJStreamingService` | 5.2 代码分析、5.5 错题分析 | ❌ | 手动调用 RAG | ❌ | ✅ |
 | `ChatModel`（直接注入） | 5.2 代码分析、5.5 错题分析（非流式） | ❌ | 手动调用 RAG | ❌ | ❌ |
@@ -3688,7 +3689,7 @@ flowchart LR
 ## 九、附录
 ### 9.1 核心接口规范
 
-> SSE 流式接口统一使用 POST 方式（RequestBody 传入参数），响应头 `Content-Type: text/event-stream`，前端通过 `fetch` + `ReadableStream` 或 `@microsoft/fetch-event-source` 库接收（标准 `EventSource` 仅支持 GET，不适用）；每个 token 作为一条 `data` 事件推送（JSON 格式 `{"d":"..."}`），结束时推送 `{"done":true}`。
+> SSE 流式接口统一使用 POST 方式（RequestBody 传入参数），响应头 `Content-Type: text/event-stream`，前端通过 `fetch` + `ReadableStream` 或 `@microsoft/fetch-event-source` 库接收（标准 `EventSource` 仅支持 GET，不适用）；每个 token 作为一条 `data` 事件推送（JSON 格式 `{"d":"..."}`），Agent 中间步骤状态通过 `event: status` + `{"d":"..."}` 推送，结束时推送 `{"done":true}`。
 
 | 接口地址 | 请求方式 | 响应类型 | 接口描述 |
 |----------|----------|----------|----------|

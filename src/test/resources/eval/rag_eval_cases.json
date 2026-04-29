@@ -1,0 +1,122 @@
+[
+  {
+    "query": "二分怎么写",
+    "expectedKeywords": ["二分查找", "二分搜索", "Binary Search"],
+    "expectedDocIds": [],
+    "category": "算法基础"
+  },
+  {
+    "query": "dp入门",
+    "expectedKeywords": ["动态规划", "DP", "状态转移"],
+    "expectedDocIds": [],
+    "category": "算法基础"
+  },
+  {
+    "query": "链表反转怎么做",
+    "expectedKeywords": ["链表", "反转", "翻转"],
+    "expectedDocIds": [],
+    "category": "数据结构"
+  },
+  {
+    "query": "bfs和dfs有什么区别",
+    "expectedKeywords": ["广度优先", "深度优先", "BFS", "DFS", "搜索"],
+    "expectedDocIds": [],
+    "category": "算法基础"
+  },
+  {
+    "query": "快排时间复杂度",
+    "expectedKeywords": ["快速排序", "时间复杂度", "O(nlogn)"],
+    "expectedDocIds": [],
+    "category": "算法基础"
+  },
+  {
+    "query": "两数之和怎么优化",
+    "expectedKeywords": ["两数之和", "哈希表", "Two Sum"],
+    "expectedDocIds": [],
+    "category": "经典题目"
+  },
+  {
+    "query": "什么时候用栈",
+    "expectedKeywords": ["栈", "Stack", "括号匹配", "单调栈"],
+    "expectedDocIds": [],
+    "category": "数据结构"
+  },
+  {
+    "query": "图的最短路径",
+    "expectedKeywords": ["最短路径", "Dijkstra", "BFS", "图"],
+    "expectedDocIds": [],
+    "category": "图论"
+  },
+  {
+    "query": "递归和迭代哪个好",
+    "expectedKeywords": ["递归", "迭代", "栈溢出", "尾递归"],
+    "expectedDocIds": [],
+    "category": "编程基础"
+  },
+  {
+    "query": "怎么判断回文串",
+    "expectedKeywords": ["回文", "双指针", "字符串"],
+    "expectedDocIds": [],
+    "category": "字符串"
+  },
+  {
+    "query": "贪心算法什么场景用",
+    "expectedKeywords": ["贪心", "局部最优", "全局最优"],
+    "expectedDocIds": [],
+    "category": "算法基础"
+  },
+  {
+    "query": "堆排序怎么实现",
+    "expectedKeywords": ["堆排序", "优先队列", "堆"],
+    "expectedDocIds": [],
+    "category": "数据结构"
+  },
+  {
+    "query": "滑动窗口模板",
+    "expectedKeywords": ["滑动窗口", "双指针", "子串"],
+    "expectedDocIds": [],
+    "category": "算法技巧"
+  },
+  {
+    "query": "并查集怎么用",
+    "expectedKeywords": ["并查集", "Union-Find", "连通分量"],
+    "expectedDocIds": [],
+    "category": "数据结构"
+  },
+  {
+    "query": "背包问题分几种",
+    "expectedKeywords": ["背包", "01背包", "完全背包", "动态规划"],
+    "expectedDocIds": [],
+    "category": "动态规划"
+  },
+  {
+    "query": "前缀和有什么用",
+    "expectedKeywords": ["前缀和", "区间和", "差分"],
+    "expectedDocIds": [],
+    "category": "算法技巧"
+  },
+  {
+    "query": "树的遍历有几种",
+    "expectedKeywords": ["前序", "中序", "后序", "层序", "遍历"],
+    "expectedDocIds": [],
+    "category": "数据结构"
+  },
+  {
+    "query": "超时了怎么优化",
+    "expectedKeywords": ["TLE", "时间复杂度", "优化"],
+    "expectedDocIds": [],
+    "category": "调试技巧"
+  },
+  {
+    "query": "拓扑排序怎么写",
+    "expectedKeywords": ["拓扑排序", "DAG", "入度", "BFS"],
+    "expectedDocIds": [],
+    "category": "图论"
+  },
+  {
+    "query": "字符串匹配算法",
+    "expectedKeywords": ["KMP", "字符串匹配", "模式匹配"],
+    "expectedDocIds": [],
+    "category": "字符串"
+  }
+]
