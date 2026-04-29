@@ -4,6 +4,7 @@ import com.XI.xi_oj.ai.agent.AiModelHolder;
 import com.XI.xi_oj.utils.TimeUtil;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
@@ -15,6 +16,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.DigestUtils;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -52,6 +54,34 @@ public class OJKnowledgeRetriever {
         String result = doRetrieve(query, topK, minScore);
         stringRedisTemplate.opsForValue().set(cacheKey, result, TimeUtil.minutes(RAG_CACHE_TTL_MINUTES));
         return result;
+    }
+
+    public List<Content> retrieveAsContents(String query, int topK, double minScore) {
+        try {
+            Embedding queryEmbedding = aiModelHolder.getEmbeddingModel().embed(query).content();
+            EmbeddingSearchRequest searchRequest = EmbeddingSearchRequest.builder()
+                    .queryEmbedding(queryEmbedding)
+                    .maxResults(topK)
+                    .minScore(minScore)
+                    .build();
+
+            List<Content> results = new ArrayList<>();
+
+            embeddingStore.search(searchRequest).matches().stream()
+                    .filter(m -> m.embedded() != null)
+                    .map(m -> Content.from(m.embedded()))
+                    .forEach(results::add);
+
+            questionEmbeddingStore.search(searchRequest).matches().stream()
+                    .filter(m -> m.embedded() != null)
+                    .map(m -> Content.from(m.embedded()))
+                    .forEach(results::add);
+
+            return results;
+        } catch (Exception e) {
+            log.warn("[RAG] 知识库检索失败: {}", e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     private String doRetrieve(String query, int topK, double minScore) {
