@@ -1,6 +1,6 @@
 # XI OJ AIGC 功能拓展新手介绍报告
 
-更新时间：2026-04-22  
+更新时间：2026-04-29  
 适用对象：第一次接触本项目 AIGC 模块的同学
 
 ## 1. 文档目标
@@ -47,7 +47,7 @@ flowchart LR
     E --> G["OJKnowledgeRetriever (RAG)"]
     E --> H["MySQL / Redis"]
     G --> I["Milvus: oj_knowledge / oj_question"]
-    F --> J["大模型 API (Qwen)"]
+    F --> J["大模型 API (OpenAI 兼容协议)<br/>百炼/DeepSeek/OpenAI/智谱等"]
 ```
 
 ---
@@ -58,21 +58,33 @@ flowchart LR
 
 ### 设计定位
 
-由一个工厂类集中管理所有 AI 相关 Bean，避免在业务代码里重复创建模型和 Agent。
+由一个工厂类集中管理所有 AI 相关 Bean，避免在业务代码里重复创建模型和 Agent。支持多供应商热切换，无需重启后端。
 
 ### 关键实现
 
-1. 工厂类：`src/main/java/com/XI/xi_oj/ai/agent/AiAgentFactory.java`
-2. 产物：
+1. 模型持有者：`src/main/java/com/XI/xi_oj/ai/agent/AiModelHolder.java`
+   - 统一使用 `OpenAiChatModel`（LangChain4j），通过 OpenAI 兼容协议对接所有供应商
+   - 支持供应商：阿里百炼、DeepSeek、OpenAI、智谱、MiniMax、硅基流动、月之暗面
+   - 配置变更时自动重建模型实例（事件驱动），volatile 保证线程可见性
+2. 工厂类：`src/main/java/com/XI/xi_oj/ai/agent/AiAgentFactory.java`
+3. 产物：
 `ChatLanguageModel`、`StreamingChatLanguageModel`、`EmbeddingModel`、`OJChatAgent`、`OJQuestionParseAgent`、`OJStreamingService`。
-3. 配置来源：
-`AiConfigService` + 环境变量（如 API Key）。
+4. 配置来源：
+`AiConfigService`（数据库 `ai_config` 表）+ 环境变量（AES 加密密钥）。
+
+### 供应商热切换流程
+
+1. 管理员在前端选择供应商、输入 API Key、选择模型。
+2. 前端保存配置到 `ai_config` 表（API Key 经 AES 加密存储）。
+3. 配置变更触发 `AiConfigChangedEvent`。
+4. `AiModelHolder.onConfigChanged()` 解密 API Key，用新的 baseUrl + modelName 重建模型。
+5. 所有 Agent 自动使用新模型，无需重启。
 
 ### 为什么重要
 
 1. 统一模型配置，便于后续换模型或调参数。
 2. 避免业务层直接依赖底层 SDK，减少耦合。
-3. 已适配当前依赖版本（`langchain4j 1.0.0-beta3`），规避不存在方法（如 `autoCreateCollection`）。
+3. 多供应商支持降低单一供应商依赖风险。
 
 ---
 
@@ -209,39 +221,49 @@ flowchart LR
 
 1. 控制器：`src/main/java/com/XI/xi_oj/controller/AiConfigController.java`
 2. 服务：`src/main/java/com/XI/xi_oj/service/impl/AiConfigServiceImpl.java`
+3. 加密工具：`src/main/java/com/XI/xi_oj/utils/AiEncryptUtil.java`
 
 ### 当前支持
 
 1. 动态读取模型参数、RAG 参数、Prompt 模板。
 2. Redis 缓存配置，降低 DB 压力。
-3. Prompt 读取时支持“缺失回退默认值”。
-4. Prompt 读取时支持“乱码检测后回退默认值”。
+3. Prompt 读取时支持”缺失回退默认值”和”乱码检测后回退默认值”。
+4. 多供应商热切换：`ai.provider`（供应商标识）、`ai.model.base_url`（API 端点）、`ai.model.name`（模型名称）。
+5. API Key 安全存储：通过 AES 加密存入数据库（`ai.provider.api_key_encrypted`），AES 密钥从环境变量注入。
+6. 前端 API Key 脱敏显示（`****` + 后 4 位），支持连通性测试。
 
 ---
 
 ## 7. 新手推荐学习顺序
 
-1. 先看 `AiAgentFactory`，理解模型和 Agent 是怎么组装的。
-2. 再看 `OJKnowledgeRetriever`，理解 RAG 如何做检索和过滤。
-3. 再看 `AiGlobalSwitchAspect` + `RateLimitInterceptor`，理解守门逻辑。
-4. 再看 `AiQuestionParseServiceImpl` 和 `AiWrongQuestionServiceImpl`，理解业务编排。
-5. 最后看 `WrongQuestionCollector` 和 `QuestionVectorSyncService`，理解数据沉淀链路。
+1. 先看 `AiModelHolder`，理解模型如何通过 OpenAI 兼容协议对接多供应商，以及热切换机制。
+2. 再看 `AiAgentFactory`，理解 Agent 是怎么组装的。
+3. 再看 `OJKnowledgeRetriever`，理解 RAG 如何做检索和过滤。
+4. 再看 `AiGlobalSwitchAspect` + `RateLimitInterceptor`，理解守门逻辑。
+5. 再看 `AiQuestionParseServiceImpl` 和 `AiWrongQuestionServiceImpl`，理解业务编排。
+6. 最后看 `WrongQuestionCollector` 和 `QuestionVectorSyncService`，理解数据沉淀链路。
 
 ---
 
 ## 8. 常见问题（给新手）
 
 1. 为什么要拆两个 collection？
-因为“知识点检索”和“题目相似检索”目标不同，混用会互相干扰。
+因为”知识点检索”和”题目相似检索”目标不同，混用会互相干扰。
 
 2. metadata 是什么时候写入的？
 在向量同步时写入（如 `QuestionVectorSyncService`），不是检索时临时生成。
 
 3. 为什么既有全局开关又有限流？
-开关是“总闸”，限流是“节流阀”，作用层级不同，建议同时保留。
+开关是”总闸”，限流是”节流阀”，作用层级不同，建议同时保留。
 
 4. 流式接口和非流式接口为什么都保留？
 非流式方便普通 API 调用，流式提升交互体验，两者服务不同场景。
+
+5. 为什么用 OpenAI 兼容协议而不是各家 SDK？
+主流供应商（百炼、DeepSeek、智谱、MiniMax 等）都兼容 OpenAI 接口格式，用一个 `OpenAiChatModel` 就能对接所有供应商，只需切换 baseUrl 和 apiKey，无需引入多个 SDK。
+
+6. API Key 为什么不存环境变量而是存数据库？
+环境变量修改需要重启服务，存数据库（AES 加密）可以在前端热更新，运维更灵活。AES 密钥本身仍从环境变量注入，保证安全。
 
 ---
 
@@ -256,6 +278,6 @@ flowchart LR
 
 ## 10. 一句话总结
 
-当前 AIGC 架构已经具备“可配置、可控成本、可扩展、可运维”的基础能力。  
-新手按“工厂 -> RAG -> 守门（开关+限流）-> 业务服务”的顺序学习，能最快建立全局认知并进入可开发状态。
+当前 AIGC 架构已经具备”可配置、可控成本、可扩展、可运维、多供应商热切换”的基础能力。  
+新手按”模型持有者(AiModelHolder) -> 工厂(AiAgentFactory) -> RAG -> 守门（开关+限流）-> 业务服务”的顺序学习，能最快建立全局认知并进入可开发状态。
 

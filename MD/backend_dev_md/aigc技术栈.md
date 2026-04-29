@@ -6,7 +6,7 @@
 
 ## 场景一：简历/项目介绍（一行流）
 
-AIGC 模块技术栈：LangChain4j + DashScope（Qwen）· Tool Calling（查题/判题/查错题）· Redis + MySQL 双层 Chat Memory 持久化 · 多实例 Agent 分工 · SSE 流式统一协议 · RAG 双向量库隔离检索（content_type / difficulty 元数据精准过滤 + Redis 缓存）· AOP 全局开关 + 分层限流 · ai_config 配置中心与 Prompt 动态治理 · 艾宾浩斯遗忘曲线错题复习
+AIGC 模块技术栈：LangChain4j + 多供应商热切换（百炼/DeepSeek/OpenAI/智谱等，OpenAI 兼容协议）· Tool Calling（查题/判题/查错题）· Redis + MySQL 双层 Chat Memory 持久化 · 多实例 Agent 分工 · SSE 流式统一协议 · RAG 双向量库隔离检索（content_type / difficulty 元数据精准过滤 + Redis 缓存）· AOP 全局开关 + 分层限流 · ai_config 配置中心与 Prompt 动态治理 · API Key AES 加密存储 · 艾宾浩斯遗忘曲线错题复习
 
 ---
 

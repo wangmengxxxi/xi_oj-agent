@@ -87,9 +87,9 @@ flowchart LR
 | 嵌入模型 | 阿里百炼 text-embedding-v3 | - | 文本向量化生成 | 中文适配性强，默认维度1024可配置，与主模型生态统一 |
 
 ### 3.3 项目核心依赖（pom.xml）
-> **与当前仓库对齐说明（2026-04-16）**
-> - 已引入：`langchain4j`、`langchain4j-community-dashscope`、`langchain4j-milvus`；
-> - 尚未引入（按需在 AI 流式阶段补充）：`spring-boot-starter-webflux`、`langchain4j-reactor`。
+> **与当前仓库对齐说明（2026-04-29）**
+> - 已引入：`langchain4j`、`langchain4j-community-dashscope`、`langchain4j-open-ai`、`langchain4j-milvus`；
+> - `langchain4j-open-ai` 提供通用 OpenAI 兼容接口适配，支持百炼/DeepSeek/智谱等所有兼容平台热切换。
 
 ```xml
 <!-- BOM放在 dependencyManagement 中统一管理版本，避免版本冲突 -->
@@ -157,6 +157,11 @@ flowchart LR
     <dependency>
         <groupId>dev.langchain4j</groupId>
         <artifactId>langchain4j-community-dashscope</artifactId>
+    </dependency>
+    <!-- OpenAI 兼容接口适配层（支持百炼/DeepSeek/智谱等所有兼容平台热切换） -->
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-open-ai</artifactId>
     </dependency>
     <!-- Milvus 向量库适配层（版本由 BOM 管理） -->
     <dependency>
@@ -247,10 +252,10 @@ milvus:
   host: 192.168.26.132
   port: 19530
 
-# AI 模型（API Key 必须通过环境变量注入，禁止硬编码）
+# AI 配置（AES 密钥用于加解密数据库中的 API Key）
 ai:
-  model:
-    api-key: ${AI_API_KEY}   # ⚠️ 启动前必须设置：export AI_API_KEY=sk-xxx
+  encrypt:
+    key: ${AI_ENCRYPT_KEY}   # ⚠️ 启动前必须设置：export AI_ENCRYPT_KEY=（任意16字符字符串）
 
 # MyBatis-Plus（与现有项目保持一致）
 mybatis-plus:
@@ -303,33 +308,58 @@ CREATE TABLE IF NOT EXISTS ai_config
 ```
 **初始化核心配置**：
 
-> `ai.model.api_key` 已移除，API Key 属于敏感凭证，通过环境变量注入，不落库，详见下方说明。
+> API Key 通过 AES 加密后存入 `ai.provider.api_key_encrypted` 字段，AES 密钥通过环境变量 `AI_ENCRYPT_KEY` 注入。管理员在前端 AI 配置页输入明文 Key，后端自动加密存储。
 
 | config_key | config_value | description |
 |------------|--------------|-------------|
 | ai.global.enable | true | AI功能全局开关 |
-| ai.model.base_url | https://dashscope.aliyuncs.com/compatible-mode/v1 | 百炼OpenAI兼容端点，通常无需修改 |
-| ai.model.name | qwen-plus | 聊天模型名称（可选：qwen-turbo / qwen-plus / qwen-max）修改后即时重建生效 |
+| ai.provider | dashscope | 当前AI供应商（dashscope/deepseek/openai/zhipu/minimax/siliconflow/moonshot） |
+| ai.provider.api_key_encrypted | （AES密文） | 聊天模型API密钥（AES加密存储，前端输入后自动加密） |
+| ai.embedding.api_key_encrypted | （AES密文，可留空） | 嵌入模型API密钥（留空则使用聊天模型密钥） |
+| ai.model.base_url | https://dashscope.aliyuncs.com/compatible-mode/v1 | API端点（选择供应商后自动填充，支持手动修改） |
+| ai.model.name | qwen-plus | 聊天模型名称（支持预设选择或手动输入任意模型名） |
 | ai.model.embedding_name | text-embedding-v3 | 嵌入模型名称，修改后需重建向量索引。修改后即时重建生效 |
 | ai.rag.top_k | 3 | RAG检索返回条数（建议3-5）修改后即时重建生效 |
 | ai.rag.similarity_threshold | 0.7 | RAG最小相似度阈值（0-1，值越高检索越严格）修改后即时重建生效 |
 
 > **配置生效方式说明**：
 > - `ai.global.enable`、`ai.prompt.*` 等配置通过 Redis 缓存（TTL 5 分钟）读取，修改后无需重启，最多 5 分钟内全局生效；
-> - `ai.model.name`、`ai.model.embedding_name`、`ai.rag.top_k`、`ai.rag.similarity_threshold` 通过 `AiModelHolder` 动态持有，管理员修改后由 Spring 事件（`AiConfigChangedEvent`）触发即时重建，**无需重启服务**。
+> - `ai.provider`、`ai.provider.api_key_encrypted`、`ai.model.name`、`ai.model.base_url`、`ai.model.embedding_name`、`ai.rag.*` 通过 `AiModelHolder` 动态持有，管理员修改后由 Spring 事件（`AiConfigChangedEvent`）触发即时重建，**无需重启服务**。
 
-**API Key 配置方式（环境变量注入）**：
+**API Key 加密存储方案**：
+
+API Key 不再以明文存储在环境变量或数据库中，而是通过 AES 对称加密后存入 `ai_config` 表：
+
+```
+前端输入明文 Key → HTTPS 传输 → 后端 AES 加密 → 密文存入 ai_config 表 → 读取时解密 → 传给模型客户端
+```
+
+AES 密钥通过环境变量注入：
 ```yaml
 # application.yml
 ai:
-  model:
-    api-key: ${AI_API_KEY}   # 从环境变量读取，不写入代码和数据库
+  encrypt:
+    key: ${AI_ENCRYPT_KEY}   # AES 密钥（16字符），用于加解密数据库中的 API Key
 ```
 部署时在服务器或 Docker 中设置环境变量：
 ```bash
 # Linux / Docker
-export AI_API_KEY=sk-xxxxxxxxxxxxxxxx
+export AI_ENCRYPT_KEY=myAesKey12345678   # 任意16字符字符串
 ```
+
+**多供应商热切换**：
+
+系统支持 7 家 AI 供应商热切换，均通过 OpenAI 兼容协议接入，管理员在前端选择供应商 → 输入 API Key → 保存即可生效，无需重启：
+
+| 供应商 | 默认 base_url | 代表模型 |
+|--------|---------------|----------|
+| 阿里百炼（dashscope） | https://dashscope.aliyuncs.com/compatible-mode/v1 | qwen-plus, qwen-max |
+| DeepSeek | https://api.deepseek.com/v1 | deepseek-chat, deepseek-reasoner |
+| OpenAI | https://api.openai.com/v1 | gpt-4o, gpt-4o-mini |
+| 智谱 AI（zhipu） | https://open.bigmodel.cn/api/paas/v4/ | glm-4-plus, glm-4-flash |
+| MiniMax | https://api.minimax.chat/v1/ | abab6.5s-chat |
+| 硅基流动（siliconflow） | https://api.siliconflow.cn/v1 | 多种开源模型 |
+| 月之暗面（moonshot） | https://api.moonshot.cn/v1 | moonshot-v1-8k |
 
 #### 4.2.2 AI对话记录表（ai_chat_record）
 用于存储AI问答页面的用户对话历史，支持多轮对话与历史记录查看。
@@ -1009,39 +1039,68 @@ public class AiConfigController {
     @Autowired
     private AiConfigService aiConfigService;
 
-    /**
-     * 可读写的配置 Key 白名单（含模型参数、RAG 参数、各模块 Prompt）
-     * api_key 不在此列，统一走环境变量注入
-     */
+    @Value("${ai.encrypt.key}")
+    private String encryptKey;
+
     private static final List<String> READABLE_KEYS = Arrays.asList(
             "ai.global.enable",
+            "ai.provider", "ai.provider.api_key_encrypted", "ai.embedding.api_key_encrypted",
             "ai.model.name", "ai.model.base_url", "ai.model.embedding_name",
             "ai.rag.top_k", "ai.rag.similarity_threshold",
-            // Prompt 动态管理配置项（对应 5.2 代码分析 / 5.4 题目解析 / 5.5 错题分析）
-            "ai.prompt.code_analysis", "ai.prompt.wrong_analysis", "ai.prompt.question_parse"
+            "ai.prompt.code_analysis", "ai.prompt.wrong_analysis", "ai.prompt.question_parse",
+            "ai.prompt.chat_system"
     );
 
-    /** 获取所有可读 AI 配置（过滤敏感项） */
+    private static final Set<String> ENCRYPTED_KEYS = Set.of(
+            "ai.provider.api_key_encrypted", "ai.embedding.api_key_encrypted"
+    );
+
+    /** 获取所有可读 AI 配置（加密字段脱敏返回） */
     @GetMapping("/config")
     @AuthCheck(mustRole = "admin")
     public BaseResponse<Map<String, String>> getConfig() {
         Map<String, String> result = new LinkedHashMap<>();
         for (String key : READABLE_KEYS) {
-            result.put(key, aiConfigService.getConfigValue(key));
+            String value = aiConfigService.getConfigValue(key);
+            if (ENCRYPTED_KEYS.contains(key) && value != null && !value.isEmpty()) {
+                String plain = AiEncryptUtil.decrypt(encryptKey, value);
+                result.put(key, maskApiKey(plain));  // 返回 ****xxxx 脱敏值
+            } else {
+                result.put(key, value);
+            }
         }
         return ResultUtils.success(result);
     }
 
-    /** 修改 AI 配置（禁止修改 api_key，统一走环境变量） */
+    /** 修改 AI 配置（加密字段自动 AES 加密存储） */
     @PostMapping("/config")
     @AuthCheck(mustRole = "admin")
     public BaseResponse<String> updateConfig(@RequestBody AiConfigUpdateRequest request) {
-        if ("ai.model.api_key".equals(request.getConfigKey())) {
-            throw new BusinessException(ErrorCode.NO_AUTH_ERROR,
-                    "API Key 不允许通过接口修改，请使用环境变量 AI_API_KEY");
+        String key = request.getConfigKey();
+        String value = request.getConfigValue();
+        if (ENCRYPTED_KEYS.contains(key)) {
+            if (value == null || value.isEmpty() || value.startsWith("****")) {
+                return ResultUtils.success("密钥未修改，跳过更新");
+            }
+            String encrypted = AiEncryptUtil.encrypt(encryptKey, value);
+            aiConfigService.updateConfig(key, encrypted);
+            return ResultUtils.success("密钥已加密保存，模型即时重建生效");
         }
-        aiConfigService.updateConfig(request.getConfigKey(), request.getConfigValue());
-        return ResultUtils.success("配置更新成功，5分钟内全局生效");
+        aiConfigService.updateConfig(key, value);
+        return ResultUtils.success("配置更新成功，模型与 RAG 参数即时重建生效");
+    }
+
+    /** 测试供应商连通性（用传入的 apiKey + baseUrl + model 发一个最小请求） */
+    @PostMapping("/provider/test")
+    @AuthCheck(mustRole = "admin")
+    public BaseResponse<String> testProviderConnection(@RequestBody Map<String, String> request) {
+        OpenAiChatModel testModel = OpenAiChatModel.builder()
+                .apiKey(request.get("apiKey"))
+                .baseUrl(request.get("baseUrl"))
+                .modelName(request.get("modelName"))
+                .maxTokens(10).build();
+        String reply = testModel.chat("hi");
+        return ResultUtils.success("连接成功，模型响应：" + reply);
     }
 }
 ```
@@ -1209,6 +1268,7 @@ public class AiAgentFactory {
 // ─────────────────────────────────────────────
 // AiModelHolder：动态持有 AI 模型和 Agent 代理
 // 管理员修改 ai_config 后通过 AiConfigChangedEvent 触发即时重建
+// 支持多供应商热切换（通过 OpenAiChatModel 兼容协议）
 // ─────────────────────────────────────────────
 @Component
 @Slf4j
@@ -1219,20 +1279,30 @@ public class AiModelHolder {
     private final MilvusEmbeddingStore embeddingStore;
     private final ChatMemoryStore chatMemoryStore;
 
-    @Value("${ai.model.api-key}")
-    private String apiKey;
+    @Value("${ai.encrypt.key}")
+    private String encryptKey;  // AES 密钥，用于解密数据库中的 API Key
 
     // volatile 保证多线程可见性
-    private volatile ChatLanguageModel chatModel;
-    private volatile StreamingChatLanguageModel streamingChatModel;
+    private volatile ChatModel chatModel;
+    private volatile StreamingChatModel streamingChatModel;
     private volatile EmbeddingModel embeddingModel;
     private volatile OJChatAgent ojChatAgent;
     private volatile OJQuestionParseAgent ojQuestionParseAgent;
     private volatile OJStreamingService ojStreamingService;
 
+    // 触发重建的配置键集合
+    private static final Set<String> MODEL_NAME_KEYS = Set.of(
+            "ai.model.name", "ai.provider", "ai.provider.api_key_encrypted", "ai.model.base_url");
+    private static final Set<String> EMBEDDING_NAME_KEYS = Set.of(
+            "ai.model.embedding_name", "ai.embedding.api_key_encrypted");
+
     @PostConstruct
     public void init() {
-        // 启动时首次构建所有模型和 Agent
+        String apiKey = getDecryptedApiKey("ai.provider.api_key_encrypted");
+        if (apiKey.isEmpty()) {
+            log.warn("[AiModelHolder] API Key 未配置，跳过模型初始化。请在管理后台配置供应商密钥后自动生效");
+            return;
+        }
         this.chatModel = buildChatModel();
         this.streamingChatModel = buildStreamingChatModel();
         this.embeddingModel = buildEmbeddingModel();
@@ -1244,20 +1314,45 @@ public class AiModelHolder {
     @EventListener
     public void onConfigChanged(AiConfigChangedEvent event) {
         String key = event.getConfigKey();
-        // ai.model.name → 重建全部模型 + Agent
-        // ai.model.embedding_name → 重建嵌入模型 + Agent
-        // ai.rag.top_k / ai.rag.similarity_threshold → 仅重建 Agent（内部 ContentRetriever 使用新参数）
+        String apiKey = getDecryptedApiKey("ai.provider.api_key_encrypted");
+        // MODEL_NAME_KEYS（含 provider/apiKey/baseUrl/modelName）→ 重建聊天模型 + Agent
+        // EMBEDDING_NAME_KEYS → 重建嵌入模型 + Agent
+        // RAG_KEYS → 仅重建 Agent（内部 ContentRetriever 使用新参数）
+        // 所有分支均先检查 API Key 是否可用，为空则跳过
+    }
+
+    // 聊天模型构建：使用通用 OpenAiChatModel，支持所有 OpenAI 兼容平台
+    private ChatModel buildChatModel() {
+        String modelName = aiConfigService.getConfigValue("ai.model.name");
+        String baseUrl = aiConfigService.getConfigValue("ai.model.base_url");
+        String apiKey = getDecryptedApiKey("ai.provider.api_key_encrypted");
+        return OpenAiChatModel.builder()
+                .apiKey(apiKey).baseUrl(baseUrl).modelName(modelName)
+                .temperature(0.2).maxTokens(4096).build();
+    }
+
+    // 嵌入模型构建：仍使用 QwenEmbeddingModel（百炼 embedding 服务）
+    private EmbeddingModel buildEmbeddingModel() {
+        String embeddingName = aiConfigService.getConfigValue("ai.model.embedding_name");
+        String apiKey = getDecryptedApiKey("ai.embedding.api_key_encrypted");
+        if (apiKey.isEmpty()) apiKey = getDecryptedApiKey("ai.provider.api_key_encrypted");
+        return QwenEmbeddingModel.builder().apiKey(apiKey).modelName(embeddingName).build();
+    }
+
+    // 从数据库读取加密的 API Key 并解密
+    private String getDecryptedApiKey(String configKey) {
+        String encrypted = aiConfigService.getConfigValue(configKey);
+        if (encrypted == null || encrypted.isEmpty()) return "";
+        return AiEncryptUtil.decrypt(encryptKey, encrypted);
     }
 
     // getter 供消费方获取最新实例
-    public ChatLanguageModel getChatModel() { return chatModel; }
-    public StreamingChatLanguageModel getStreamingChatModel() { return streamingChatModel; }
+    public ChatModel getChatModel() { return chatModel; }
+    public StreamingChatModel getStreamingChatModel() { return streamingChatModel; }
     public EmbeddingModel getEmbeddingModel() { return embeddingModel; }
     public OJChatAgent getOjChatAgent() { return ojChatAgent; }
     public OJQuestionParseAgent getOjQuestionParseAgent() { return ojQuestionParseAgent; }
     public OJStreamingService getOjStreamingService() { return ojStreamingService; }
-
-    // builder 方法（与原 AiAgentFactory 逻辑一致，此处省略）
 }
 
 // ─────────────────────────────────────────────

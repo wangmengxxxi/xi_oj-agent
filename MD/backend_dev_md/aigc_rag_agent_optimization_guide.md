@@ -494,10 +494,11 @@ private ChatModel buildRewriteModel() {
     int maxTokens = Integer.parseInt(
             aiConfigService.getConfigValue("ai.rewrite.max_tokens"));
 
-    return QwenChatModel.builder()
-            .apiKey(apiKey)
+    return OpenAiChatModel.builder()
+            .apiKey(apiKey)  // 从数据库解密获取
+            .baseUrl(aiConfigService.getConfigValue("ai.model.base_url"))
             .modelName(modelName)
-            .temperature(temperature)
+            .temperature((double) temperature)
             .maxTokens(maxTokens)
             .build();
 }
@@ -598,8 +599,8 @@ import java.util.stream.Collectors;
 @Slf4j
 public class RerankService {
 
-    @Value("${ai.model.api-key}")
-    private String apiKey;
+    @Value("${ai.encrypt.key}")
+    private String encryptKey;  // AES 密钥，用于解密数据库中的 API Key
 
     private static final String RERANK_URL =
             "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank";
@@ -641,7 +642,7 @@ public class RerankService {
     private List<String> doRerank(String query, List<String> documents, int topN) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("Authorization", "Bearer " + apiKey);
+        headers.set("Authorization", "Bearer " + getDecryptedApiKey());
 
         Map<String, Object> body = new HashMap<>();
         body.put("model", RERANK_MODEL);
