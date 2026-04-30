@@ -25,6 +25,24 @@ spring:
     uris: http://localhost:9200
     username: root
     password: 123456
+  # RabbitMQ 配置
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:admin}
+    password: ${RABBITMQ_PASSWORD}
+    virtual-host: /
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    connection-timeout: 5000
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 3
+        concurrency: 3
+        max-concurrency: 10
+        retry:
+          enabled: false
 mybatis-plus:
   configuration:
     # 生产环境关闭日志

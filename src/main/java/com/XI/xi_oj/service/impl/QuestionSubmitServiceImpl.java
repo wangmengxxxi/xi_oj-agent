@@ -24,8 +24,12 @@ import com.XI.xi_oj.service.QuestionSubmitService;
 import com.XI.xi_oj.service.UserService;
 import com.XI.xi_oj.utils.SqlUtils;
 import com.XI.xi_oj.judge.JudgeService;
+import com.XI.xi_oj.config.RabbitMQConfig;
+import com.XI.xi_oj.model.dto.mq.JudgeMessage;
 import jakarta.annotation.Resource;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
@@ -51,6 +55,12 @@ public class QuestionSubmitServiceImpl extends ServiceImpl<QuestionSubmitMapper,
     @Lazy
     @Resource
     private JudgeService judgeService;
+
+    @Resource
+    private RabbitTemplate rabbitTemplate;
+
+    @Value("${oj.judge.use-mq:true}")
+    private boolean useMQ;
 
     /**
      * 提交题目
@@ -90,7 +100,21 @@ public class QuestionSubmitServiceImpl extends ServiceImpl<QuestionSubmitMapper,
         }
         // 异步执行判题服务
         long questionSubmitId = questionSubmit.getId();
-        CompletableFuture.runAsync(() -> judgeService.doJudge(questionSubmitId));
+        if (useMQ) {
+            JudgeMessage message = JudgeMessage.builder()
+                    .questionSubmitId(questionSubmitId)
+                    .questionId(questionId)
+                    .userId(userId)
+                    .source(null)
+                    .build();
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.JUDGE_EXCHANGE,
+                    RabbitMQConfig.JUDGE_ROUTING_KEY,
+                    message
+            );
+        } else {
+            CompletableFuture.runAsync(() -> judgeService.doJudge(questionSubmitId));
+        }
 
         return questionSubmitId;
     }

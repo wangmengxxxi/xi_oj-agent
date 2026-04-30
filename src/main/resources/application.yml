@@ -46,6 +46,22 @@ spring:
       # 大小限制（PDF 文件较大，需要 50MB）
       max-file-size: 50MB
       max-request-size: 50MB
+  # RabbitMQ 配置
+  rabbitmq:
+    host: 192.168.26.128
+    port: 5672
+    username: admin
+    password: 123456
+    virtual-host: /
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 1
+        concurrency: 2
+        max-concurrency: 5
+        missing-queues-fatal: false
 server:
   address: 0.0.0.0
   port: 8101
@@ -129,3 +145,8 @@ logging:
   level:
     com.XI.xi_oj.ai.rag: DEBUG
     dev.langchain4j: DEBUG
+
+# 判题 MQ 开关
+oj:
+  judge:
+    use-mq: true
