@@ -20,6 +20,9 @@ public final class RagImageSupport {
     public static final String IMAGE_REFS_KEY = "image_refs";
 
     private static final Pattern ASCII_TOKEN = Pattern.compile("[a-zA-Z][a-zA-Z0-9_+-]{1,}");
+    private static final Pattern FIGURE_REF_PATTERN = Pattern.compile(
+            "图\\s*(\\d+[‐‑‒–—―\\-]\\d+)"
+    );
     private static final List<String> DOMAIN_TERMS = List.of(
             "dfs", "bfs", "avl", "bst", "dp", "topk", "top-k",
             "\u904d\u5386", "\u524d\u5e8f", "\u4e2d\u5e8f", "\u540e\u5e8f", "\u5c42\u5e8f",
@@ -57,11 +60,26 @@ public final class RagImageSupport {
         }
         StringBuilder sb = new StringBuilder(text);
         sb.append("\n\n[RAG_SOURCE_IMAGES]");
-        sb.append("\nOnly keep the following image links when they directly support the answer.");
+        sb.append("\n以下是知识库中与本段内容关联的图片。请根据图片描述判断是否与用户问题相关：");
+        sb.append("\n- 如果图片描述与回答内容直接相关，在回答中引用该图片链接");
+        sb.append("\n- 如果图片描述与用户问题无关，忽略该图片");
         for (ImageRef ref : refs) {
-            sb.append("\n![knowledge-image](").append(ref.url()).append(")");
+            String alt = buildAltText(ref);
+            sb.append("\n![").append(alt).append("](").append(ref.url()).append(")");
         }
         return sb.toString();
+    }
+
+    private static String buildAltText(ImageRef ref) {
+        String caption = nullToEmpty(ref.caption()).trim();
+        if (!caption.isEmpty()) {
+            return caption;
+        }
+        String title = nullToEmpty(ref.title()).trim();
+        if (!title.isEmpty()) {
+            return title;
+        }
+        return "knowledge-image";
     }
 
     public static List<ImageRef> relevantImages(Metadata metadata, String query, String segmentText) {
@@ -70,9 +88,7 @@ public final class RagImageSupport {
         }
         List<ImageRef> refs = parseImageRefs(metadata.getString(IMAGE_REFS_KEY));
         if (!refs.isEmpty()) {
-            return refs.stream()
-                    .filter(ref -> isRelevant(query, ref.semanticText(), segmentText))
-                    .toList();
+            return refs;
         }
 
         String imageUrls = metadata.getString(IMAGE_URLS_KEY);
@@ -166,6 +182,9 @@ public final class RagImageSupport {
         if (!normalizedQuery.isBlank() && normalizedImage.contains(normalizedQuery)) {
             return true;
         }
+        if (segmentText != null && matchesFigureRef(segmentText, imageText)) {
+            return true;
+        }
         Set<String> queryTerms = terms(query);
         Set<String> imageTerms = terms(imageText);
         if (!queryTerms.isEmpty() && !imageTerms.isEmpty()) {
@@ -179,9 +198,43 @@ public final class RagImageSupport {
                 return true;
             }
         }
-        // If the image metadata only has local text and the user query is broad, allow
-        // images that are tied to the retrieved segment's main terms.
         return queryLooksVisual(query) && hasMeaningfulOverlap(segmentText, imageText);
+    }
+
+    private static boolean matchesFigureRef(String segmentText, String imageText) {
+        Set<String> segmentFigureIds = extractFigureIds(segmentText);
+        if (segmentFigureIds.isEmpty()) {
+            return false;
+        }
+        Set<String> imageFigureIds = extractFigureIds(imageText);
+        for (String id : segmentFigureIds) {
+            if (imageFigureIds.contains(id)) {
+                return true;
+            }
+        }
+        String normalizedImage = normalize(imageText);
+        for (String id : segmentFigureIds) {
+            if (normalizedImage.contains(id)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static Set<String> extractFigureIds(String text) {
+        if (text == null || text.isBlank()) {
+            return Set.of();
+        }
+        Set<String> ids = new LinkedHashSet<>();
+        Matcher matcher = FIGURE_REF_PATTERN.matcher(text);
+        while (matcher.find()) {
+            ids.add(normalizeFigureId(matcher.group(1)));
+        }
+        return ids;
+    }
+
+    private static String normalizeFigureId(String id) {
+        return id.replaceAll("[‐‑‒–—―\\-]", "-");
     }
 
     private static boolean queryLooksVisual(String query) {

@@ -51,6 +51,10 @@ public class PdfDocumentParser implements DocumentParser {
     private static final float IMAGE_VERTICAL_MARGIN = 120F;
     private static final int MAX_IMAGE_NEARBY_TEXT_LENGTH = 260;
 
+    private static final Pattern FIGURE_CAPTION_PATTERN = Pattern.compile(
+            "^图\\s*\\d+[‐‑‒–—―\\-]\\d+\\s+.+"
+    );
+
     private static final Pattern TITLE_PATTERN = Pattern.compile(
             "^("
                     + "\u7b2c[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\\d]+[\u7ae0\u8282\u7bc7]"
@@ -286,8 +290,9 @@ public class PdfDocumentParser implements DocumentParser {
                     String url = minioService.uploadImage(pngBytes, objectName, "image/png");
                     Float centerY = firstCenterY(positionsByName.get(name));
                     String nearbyText = buildNearbyText(pageLines.get(pageIdx), centerY);
+                    String caption = extractCaption(pageLines.get(pageIdx), centerY);
                     pageImages.computeIfAbsent(pageIdx, k -> new ArrayList<>())
-                            .add(new ImageRefCandidate(url, pageIdx, imgIdx, centerY, nearbyText));
+                            .add(new ImageRefCandidate(url, pageIdx, imgIdx, centerY, nearbyText, caption));
                     imgIdx++;
                 } catch (Exception e) {
                     log.warn("[PDF Parser] failed to extract image from page {}", pageIdx, e);
@@ -367,7 +372,7 @@ public class PdfDocumentParser implements DocumentParser {
                                 chunk.getTitle(),
                                 chunk.getTag(),
                                 candidate.nearbyText(),
-                                "",
+                                candidate.caption(),
                                 candidate.pageIndex() + 1
                         ));
                     }
@@ -449,6 +454,19 @@ public class PdfDocumentParser implements DocumentParser {
         return text.length() <= MAX_IMAGE_NEARBY_TEXT_LENGTH
                 ? text
                 : text.substring(0, MAX_IMAGE_NEARBY_TEXT_LENGTH);
+    }
+
+    private String extractCaption(List<PositionedLine> lines, Float centerY) {
+        if (lines == null || lines.isEmpty() || centerY == null) {
+            return "";
+        }
+        return lines.stream()
+                .filter(line -> Math.abs(line.y() - centerY) <= IMAGE_VERTICAL_MARGIN * 1.5F)
+                .map(PositionedLine::text)
+                .filter(s -> s != null && FIGURE_CAPTION_PATTERN.matcher(s.trim()).matches())
+                .findFirst()
+                .map(String::trim)
+                .orElse("");
     }
 
     private String inferTag(String title) {
@@ -565,6 +583,7 @@ public class PdfDocumentParser implements DocumentParser {
                                      int pageIndex,
                                      int imageIndex,
                                      Float centerY,
-                                     String nearbyText) {
+                                     String nearbyText,
+                                     String caption) {
     }
 }
