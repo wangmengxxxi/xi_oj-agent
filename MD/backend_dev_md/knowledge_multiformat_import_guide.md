@@ -3,12 +3,14 @@
 更新时间：2026-04-28
 前置依赖：已完成 RAG 知识库基础模块（参见 `aigc_engineering_implementation_guide.md` 第 6 章）
 
-> **当前落地状态（2026-04-28）**
-> 1. 本方案所有核心功能已在仓库中落地实现，包括 PDF 解析器（`PdfDocumentParser`）、Word 解析器（`WordDocumentParser`）、MinIO 图片存储（`MinioService`）、Controller 多格式路由 + 大文件异步处理（`KnowledgeImportController` + `KnowledgeImportAsyncService`）；
-> 2. `DocumentParser` 接口已扩展 `parseWithImages()` 方法，返回 `ParseResult(markdownBlocks, imageUrls)` record，支持图片提取链路；
+> **当前落地状态（2026-04-30）**
+> 1. 本方案所有核心功能已在仓库中落地实现，包括 PDF 解析器（`PdfDocumentParser`）、Word 解析器（`WordDocumentParser`）、MinIO 图片存储（`MinioService`）、Controller 多格式路由 + PDF/DOCX 统一异步处理（`KnowledgeImportController` + `KnowledgeImportAsyncService`）；
+> 2. `DocumentParser` 接口已扩展 `parseWithImages()` 方法（含三参数版本支持 `ImportProgressCallback` 进度回调），返回 `ParseResult(markdownBlocks, imageUrls)` record，支持图片提取链路；
 > 3. `KnowledgeInitializer.parseBlock()` 已适配 `image_urls`（逗号分隔多图）和 `source_type` 新 metadata 字段，`buildSearchableText()` 会将 `has_images: true` 和 `image_urls` 写入可检索文本；
 > 4. RAG 检索侧已通过 `ImageAwareContentRetriever` 装饰器实现图片感知：检索到含 `image_urls` 的 chunk 时，自动在上下文中追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用，LLM 可直接在回答中保留图片链接；
-> 5. System Prompt 中已增加【图片引用规范】，要求 LLM 原样保留 RAG 检索到的图片链接，禁止修改或编造图片 URL。
+> 5. System Prompt 中已增加【图片引用规范】，要求 LLM 原样保留 RAG 检索到的图片链接，禁止修改或编造图片 URL；
+> 6. VL 视觉模型（Qwen-VL）已集成：导入时自动为每张图片生成一句话描述（caption），写入 `image_refs` metadata，用于图片-chunk 语义匹配和检索时 LLM 理解图片内容；
+> 7. 前端导入流程已支持进度条实时展示（解析文档 → 上传图片 → 生成图片描述 → 写入向量库）。
 
 ---
 
