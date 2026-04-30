@@ -6,9 +6,7 @@ import dev.langchain4j.rag.content.aggregator.DefaultContentAggregator;
 import dev.langchain4j.rag.query.Query;
 import lombok.RequiredArgsConstructor;
 
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @RequiredArgsConstructor
 public class RerankingContentAggregator implements ContentAggregator {
@@ -20,10 +18,22 @@ public class RerankingContentAggregator implements ContentAggregator {
     @Override
     public List<Content> aggregate(Map<Query, Collection<List<Content>>> queryToContents) {
         List<Content> merged = delegate.aggregate(queryToContents);
-        String query = queryToContents.keySet().stream()
+
+        List<Content> deduped = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (Content c : merged) {
+            String text = c.textSegment() != null ? c.textSegment().text() : "";
+            if (seen.add(text)) {
+                deduped.add(c);
+            }
+        }
+
+        String originalQuery = QueryRewriteTransformer.ORIGINAL_QUERY.get();
+        String rerankQuery = originalQuery != null ? originalQuery : queryToContents.keySet().stream()
                 .findFirst()
                 .map(Query::text)
                 .orElse("");
-        return rerankService.rerank(query, merged, rerankService.topN(fallbackTopN));
+
+        return rerankService.rerank(rerankQuery, deduped, rerankService.topN(fallbackTopN));
     }
 }

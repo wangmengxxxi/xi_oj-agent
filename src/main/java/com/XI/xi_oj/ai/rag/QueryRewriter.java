@@ -27,12 +27,13 @@ public class QueryRewriter {
     private static final int MAX_DIRECT_QUERY_LENGTH = 50;
 
     private static final String REWRITE_PROMPT = """
-            你是一个搜索查询优化器。请将用户的口语化问题改写为更适合 OJ 算法知识库语义检索的描述。
-            要求：
-            1. 保留用户核心意图，不改变含义；
-            2. 补充算法、数据结构、边界条件、复杂度等相关关键词；
-            3. 展开缩写和口语表达，例如 dp 改为动态规划；
-            4. 只输出一句中文检索 query，不要解释，不要加前缀。
+            你是一个搜索查询规范化工具。对用户的 query 做最小化改写，只做以下三件事：
+            1. 展开缩写：dp→动态规划，bfs→广度优先搜索，dfs→深度优先搜索，快排→快速排序等；
+            2. 纠正明显错别字；
+            3. 将口语缩略补全为完整术语，例如"二分"→"二分查找"。
+            禁止添加任何解释性描述、补充关键词或扩展语句。改写后长度不得超过原文的 2 倍。
+            如果原文已经足够清晰，直接原样输出。
+            只输出改写结果，不要加前缀或解释。
 
             用户问题：%s
             改写后：""";
@@ -108,8 +109,8 @@ public class QueryRewriter {
         if (lineBreak > 0) {
             text = text.substring(0, lineBreak).trim();
         }
-        if (text.length() > 120) {
-            text = text.substring(0, 120);
+        if (text.length() > 60) {
+            text = text.substring(0, 60);
         }
         return text;
     }

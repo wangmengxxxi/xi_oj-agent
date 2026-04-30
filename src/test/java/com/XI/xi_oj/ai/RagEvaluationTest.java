@@ -73,9 +73,10 @@ public class RagEvaluationTest {
         EvalResult baseline = runEvaluation(cases, false, false, "基线（无优化）");
         EvalResult withRewrite = runEvaluation(cases, true, false, "+ Query Rewrite");
         EvalResult withAll = runEvaluation(cases, true, true, "+ Rewrite + Rerank");
+        EvalResult hybrid = runHybridEvaluation(cases, "+ Hybrid + Rerank");
 
-        printComparisonTable(baseline, withRewrite, withAll);
-        printDetailedResults(cases, baseline, withRewrite, withAll);
+        printComparisonTable(baseline, withRewrite, withAll, hybrid);
+        printDetailedResults(cases, baseline, withRewrite, withAll, hybrid);
     }
 
     private EvalResult runEvaluation(List<EvalCase> cases, boolean useRewrite, boolean useRerank, String label) {
@@ -132,6 +133,85 @@ public class RagEvaluationTest {
         double avgKeywordHit = results.stream().mapToDouble(r -> r.keywordHitRate).average().orElse(0);
         double avgResultCount = results.stream().mapToDouble(r -> r.resultCount).average().orElse(0);
         double rewriteRate = cases.isEmpty() ? 0 : (double) rewriteCount / cases.size();
+
+        boolean hasDocIds = cases.stream().anyMatch(c -> c.expectedDocIds != null && !c.expectedDocIds.isEmpty());
+        double avgRecall = hasDocIds ? results.stream().mapToDouble(r -> r.recall).average().orElse(0) : -1;
+        double avgMrr = hasDocIds ? results.stream().mapToDouble(r -> r.mrr).average().orElse(0) : -1;
+
+        System.out.printf("[%s] 完成评估: avgKeywordHit=%.2f, avgResults=%.1f, rewriteRate=%.0f%%",
+                label, avgKeywordHit, avgResultCount, rewriteRate * 100);
+        if (hasDocIds) {
+            System.out.printf(", Recall@%d=%.2f, MRR=%.2f", TOP_K, avgRecall, avgMrr);
+        }
+        System.out.println();
+
+        return new EvalResult(label, results, avgKeywordHit, avgResultCount, rewriteRate, avgRecall, avgMrr);
+    }
+
+    private EvalResult runHybridEvaluation(List<EvalCase> cases, String label) {
+        EmbeddingModel em = aiModelHolder.getEmbeddingModel();
+        if (em == null) {
+            System.out.println("[SKIP] EmbeddingModel 未初始化，请先配置 API Key");
+            return new EvalResult(label, List.of());
+        }
+
+        List<CaseResult> results = new ArrayList<>();
+
+        for (EvalCase evalCase : cases) {
+            String originalQuery = evalCase.query;
+            String rewrittenQuery = queryRewriter.rewrite(originalQuery);
+            if (rewrittenQuery == null || rewrittenQuery.isBlank()) {
+                rewrittenQuery = originalQuery;
+            }
+
+            List<Content> originalKnowledge = searchStore(embeddingStore, em, originalQuery, TOP_K);
+            List<Content> originalQuestion = searchStore(questionEmbeddingStore, em, originalQuery, TOP_K);
+            List<Content> merged = new ArrayList<>(originalKnowledge);
+            merged.addAll(originalQuestion);
+
+            if (!rewrittenQuery.equals(originalQuery)) {
+                List<Content> rewriteKnowledge = searchStore(embeddingStore, em, rewrittenQuery, TOP_K);
+                List<Content> rewriteQuestion = searchStore(questionEmbeddingStore, em, rewrittenQuery, TOP_K);
+                merged.addAll(rewriteKnowledge);
+                merged.addAll(rewriteQuestion);
+            }
+
+            List<Content> deduped = new ArrayList<>();
+            Set<String> seen = new HashSet<>();
+            for (Content c : merged) {
+                String text = c.textSegment() != null ? c.textSegment().text() : "";
+                if (seen.add(text)) {
+                    deduped.add(c);
+                }
+            }
+
+            if (rerankService.enabled() && deduped.size() > 1) {
+                deduped = rerankService.rerank(originalQuery, deduped, TOP_K);
+            } else if (deduped.size() > TOP_K) {
+                deduped = deduped.subList(0, TOP_K);
+            }
+
+            List<String> resultTexts = deduped.stream()
+                    .map(c -> c.textSegment() != null ? c.textSegment().text() : "")
+                    .toList();
+
+            List<Long> retrievedDocIds = deduped.stream()
+                    .map(this::extractDocId)
+                    .filter(id -> id != null)
+                    .toList();
+
+            double keywordHitRate = calcKeywordHitRate(resultTexts, evalCase.expectedKeywords);
+            double recall = calcRecall(retrievedDocIds, evalCase.expectedDocIds, TOP_K);
+            double mrr = calcMrr(retrievedDocIds, evalCase.expectedDocIds);
+
+            results.add(new CaseResult(originalQuery, rewrittenQuery, resultTexts, retrievedDocIds,
+                    keywordHitRate, recall, mrr, deduped.size()));
+        }
+
+        double avgKeywordHit = results.stream().mapToDouble(r -> r.keywordHitRate).average().orElse(0);
+        double avgResultCount = results.stream().mapToDouble(r -> r.resultCount).average().orElse(0);
+        double rewriteRate = cases.isEmpty() ? 0 : (double) results.stream()
+                .filter(r -> !r.actualQuery.equals(r.query)).count() / cases.size();
 
         boolean hasDocIds = cases.stream().anyMatch(c -> c.expectedDocIds != null && !c.expectedDocIds.isEmpty());
         double avgRecall = hasDocIds ? results.stream().mapToDouble(r -> r.recall).average().orElse(0) : -1;
@@ -217,55 +297,56 @@ public class RagEvaluationTest {
         return 0;
     }
 
-    private void printComparisonTable(EvalResult baseline, EvalResult withRewrite, EvalResult withAll) {
+    private void printComparisonTable(EvalResult baseline, EvalResult withRewrite, EvalResult withAll, EvalResult hybrid) {
         System.out.println();
-        System.out.println("╔══════════════════════════════╦══════════════╦══════════════╦══════════════╗");
-        System.out.println("║ 指标                         ║ 基线         ║ +Rewrite     ║ +Rewrite+RR  ║");
-        System.out.println("╠══════════════════════════════╬══════════════╬══════════════╬══════════════╣");
-        System.out.printf( "║ Keyword Hit Rate             ║    %.2f       ║    %.2f       ║    %.2f       ║%n",
-                baseline.avgKeywordHit, withRewrite.avgKeywordHit, withAll.avgKeywordHit);
-        System.out.printf( "║ Avg Result Count             ║    %.1f        ║    %.1f        ║    %.1f        ║%n",
-                baseline.avgResultCount, withRewrite.avgResultCount, withAll.avgResultCount);
-        System.out.printf( "║ Rewrite Rate                 ║    %.0f%%        ║    %.0f%%       ║    %.0f%%       ║%n",
-                baseline.rewriteRate * 100, withRewrite.rewriteRate * 100, withAll.rewriteRate * 100);
+        System.out.println("╔══════════════════════════════╦══════════════╦══════════════╦══════════════╦══════════════╗");
+        System.out.println("║ 指标                         ║ 基线         ║ +Rewrite     ║ +Rewrite+RR  ║ +Hybrid+RR   ║");
+        System.out.println("╠══════════════════════════════╬══════════════╬══════════════╬══════════════╬══════════════╣");
+        System.out.printf( "║ Keyword Hit Rate             ║    %.2f       ║    %.2f       ║    %.2f       ║    %.2f       ║%n",
+                baseline.avgKeywordHit, withRewrite.avgKeywordHit, withAll.avgKeywordHit, hybrid.avgKeywordHit);
+        System.out.printf( "║ Avg Result Count             ║    %.1f        ║    %.1f        ║    %.1f        ║    %.1f        ║%n",
+                baseline.avgResultCount, withRewrite.avgResultCount, withAll.avgResultCount, hybrid.avgResultCount);
+        System.out.printf( "║ Rewrite Rate                 ║    %.0f%%        ║    %.0f%%       ║    %.0f%%       ║    %.0f%%       ║%n",
+                baseline.rewriteRate * 100, withRewrite.rewriteRate * 100, withAll.rewriteRate * 100, hybrid.rewriteRate * 100);
         if (baseline.avgRecall >= 0) {
-            System.out.printf("║ Recall@%d                     ║    %.2f       ║    %.2f       ║    %.2f       ║%n",
-                    TOP_K, baseline.avgRecall, withRewrite.avgRecall, withAll.avgRecall);
-            System.out.printf("║ MRR                          ║    %.2f       ║    %.2f       ║    %.2f       ║%n",
-                    baseline.avgMrr, withRewrite.avgMrr, withAll.avgMrr);
+            System.out.printf("║ Recall@%d                     ║    %.2f       ║    %.2f       ║    %.2f       ║    %.2f       ║%n",
+                    TOP_K, baseline.avgRecall, withRewrite.avgRecall, withAll.avgRecall, hybrid.avgRecall);
+            System.out.printf("║ MRR                          ║    %.2f       ║    %.2f       ║    %.2f       ║    %.2f       ║%n",
+                    baseline.avgMrr, withRewrite.avgMrr, withAll.avgMrr, hybrid.avgMrr);
         } else {
-            System.out.println("║ Recall@K / MRR               ║  (需填写 expectedDocIds 后启用)                ║");
+            System.out.println("║ Recall@K / MRR               ║  (需填写 expectedDocIds 后启用)                               ║");
         }
-        System.out.println("╚══════════════════════════════╩══════════════╩══════════════╩══════════════╝");
+        System.out.println("╚══════════════════════════════╩══════════════╩══════════════╩══════════════╩══════════════╝");
         System.out.println();
     }
 
-    private void printDetailedResults(List<EvalCase> cases, EvalResult baseline, EvalResult withRewrite, EvalResult withAll) {
+    private void printDetailedResults(List<EvalCase> cases, EvalResult baseline, EvalResult withRewrite, EvalResult withAll, EvalResult hybrid) {
         System.out.println("=== 逐条详情 ===");
         for (int i = 0; i < cases.size(); i++) {
             EvalCase ec = cases.get(i);
             CaseResult br = baseline.results.get(i);
             CaseResult wr = withRewrite.results.get(i);
             CaseResult ar = withAll.results.get(i);
+            CaseResult hr = hybrid.results.get(i);
 
             System.out.printf("%n--- [%d] %s (分类: %s) ---%n", i + 1, ec.query, ec.category);
             if (!wr.actualQuery.equals(ec.query)) {
                 System.out.printf("  改写: %s -> %s%n", ec.query, wr.actualQuery);
             }
             System.out.printf("  期望关键词: %s%n", ec.expectedKeywords);
-            System.out.printf("  Keyword Hit: 基线=%.2f  +Rewrite=%.2f  +All=%.2f%n",
-                    br.keywordHitRate, wr.keywordHitRate, ar.keywordHitRate);
-            System.out.printf("  结果数:      基线=%d     +Rewrite=%d     +All=%d%n",
-                    br.resultCount, wr.resultCount, ar.resultCount);
+            System.out.printf("  Keyword Hit: 基线=%.2f  +Rewrite=%.2f  +All=%.2f  +Hybrid=%.2f%n",
+                    br.keywordHitRate, wr.keywordHitRate, ar.keywordHitRate, hr.keywordHitRate);
+            System.out.printf("  结果数:      基线=%d     +Rewrite=%d     +All=%d     +Hybrid=%d%n",
+                    br.resultCount, wr.resultCount, ar.resultCount, hr.resultCount);
             if (ec.expectedDocIds != null && !ec.expectedDocIds.isEmpty()) {
-                System.out.printf("  Recall@%d:   基线=%.2f  +Rewrite=%.2f  +All=%.2f%n",
-                        TOP_K, br.recall, wr.recall, ar.recall);
-                System.out.printf("  MRR:         基线=%.2f  +Rewrite=%.2f  +All=%.2f%n",
-                        br.mrr, wr.mrr, ar.mrr);
+                System.out.printf("  Recall@%d:   基线=%.2f  +Rewrite=%.2f  +All=%.2f  +Hybrid=%.2f%n",
+                        TOP_K, br.recall, wr.recall, ar.recall, hr.recall);
+                System.out.printf("  MRR:         基线=%.2f  +Rewrite=%.2f  +All=%.2f  +Hybrid=%.2f%n",
+                        br.mrr, wr.mrr, ar.mrr, hr.mrr);
             }
 
-            if (!ar.resultTexts.isEmpty()) {
-                System.out.println("  Top1 结果片段: " + truncate(ar.resultTexts.get(0), 100));
+            if (!hr.resultTexts.isEmpty()) {
+                System.out.println("  Top1 结果片段 (Hybrid): " + truncate(hr.resultTexts.get(0), 100));
             }
         }
     }

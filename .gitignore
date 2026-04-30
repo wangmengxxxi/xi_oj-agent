@@ -1,5 +1,4 @@
-### @author <a href="https://github.com/liyupi">程序员鱼皮</a> ###
-### @from <a href="https://yupi.icu">编程导航知识星球</a> ###
+
 .m2repo/
 .claude/
 node_modules/
@@ -23,6 +22,19 @@ target/
 .tmp_msg_mem.txt
 .tmp_msg_mem_builder.txt
 replay_pid*.log
+MD
+.claude
+
+# Local-only files removed from GitHub but kept in this workspace
+/MD/
+/.claude/
+/.tmp_milvus_javap.txt
+/.tmp_msg_mem.txt
+/.tmp_msg_mem_builder.txt
+/_TmpInspectTool.java
+/_TmpTimeUnitCheck.java
+/mvnw
+/mvnw.cmd
 
 ### STS ###
 .apt_generated
