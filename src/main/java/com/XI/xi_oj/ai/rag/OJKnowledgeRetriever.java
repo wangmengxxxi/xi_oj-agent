@@ -100,7 +100,7 @@ public class OJKnowledgeRetriever {
                     .filter(match -> match.score() >= minScore)
                     .filter(match -> match.embedded() != null)
                     .map(EmbeddingMatch::embedded)
-                    .map(this::formatSegmentWithImages)
+                    .map(segment -> formatSegmentWithImages(segment, query))
                     .collect(Collectors.joining("\n\n"));
 
             return context.isBlank() ? "无相关知识点" : context;
@@ -110,20 +110,8 @@ public class OJKnowledgeRetriever {
         }
     }
 
-    private String formatSegmentWithImages(TextSegment segment) {
-        String text = segment.text();
-        String imageUrls = segment.metadata().getString("image_urls");
-        if (imageUrls == null || imageUrls.isBlank()) {
-            return text;
-        }
-        StringBuilder sb = new StringBuilder(text);
-        for (String url : imageUrls.split(",")) {
-            String trimmed = url.trim();
-            if (!trimmed.isEmpty()) {
-                sb.append("\n![配图](").append(trimmed).append(")");
-            }
-        }
-        return sb.toString();
+    private String formatSegmentWithImages(TextSegment segment, String query) {
+        return RagImageSupport.appendRelevantImages(segment, query);
     }
 
     public List<Long> retrieveSimilarQuestions(Long questionId, String questionContent) {
@@ -202,7 +190,7 @@ public class OJKnowledgeRetriever {
                 .filter(match -> typeList.contains(match.embedded().metadata().getString("content_type")))
                 .limit(topK)
                 .map(EmbeddingMatch::embedded)
-                .map(TextSegment::text)
+                .map(segment -> formatSegmentWithImages(segment, query))
                 .collect(Collectors.joining("\n\n"));
         result = result.isBlank() ? "无相关知识点" : result;
 

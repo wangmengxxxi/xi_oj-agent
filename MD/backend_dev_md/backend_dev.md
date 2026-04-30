@@ -508,11 +508,11 @@ flowchart TD
     C --> D[向量库检索]
     D --> E[相似度过滤（阈值≥0.7）]
     E --> F[content_type 元数据二次过滤]
-    F --> G[ImageAwareContentRetriever 图片感知]
-    G --> H[返回给Agent的精准上下文（含图片引用）]
+    F --> G[ImageAwareContentRetriever + RagImageSupport 图片精准匹配]
+    G --> H[返回给Agent的精准上下文（含相关图片引用）]
 ```
 
-> **图片感知检索（2026-04-28 落地）**：`oj_knowledge` 集合的 `EmbeddingStoreContentRetriever` 被 `ImageAwareContentRetriever` 装饰器包装。当检索到的 chunk 包含 `image_urls` metadata 时，自动在上下文中追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用（`![knowledge-image](url)`），使 LLM 可以在回答中直接引用知识库配图。System Prompt 中配套增加了【图片引用规范】，要求 LLM 原样保留图片链接，禁止修改或编造图片 URL。
+> **图片精准匹配检索（2026-04-29 更新）**：`oj_knowledge` 集合的 `EmbeddingStoreContentRetriever` 被 `ImageAwareContentRetriever` 装饰器包装，内部委托 `RagImageSupport.appendRelevantImages()` 实现图片相关性过滤。PDF/Word 导入时，`PdfDocumentParser` 提取页面图片并上传 MinIO，同时通过空间定位（图片 Y 坐标 vs chunk 文本 Y 范围）和语义匹配（附近文本术语重叠）将图片精准分配到对应 chunk，生成 `image_refs` JSON metadata（含 url/title/tag/nearbyText/page）。检索时 `RagImageSupport` 解析 `image_refs`，按 query 术语相关性过滤，只将相关图片以 `[RAG_SOURCE_IMAGES]` 段注入 LLM 上下文。System Prompt 中配套增加了【图片引用规范】，要求 LLM 原样保留图片链接，禁止修改或编造图片 URL。
 
 **核心代码实现**：
 ```java
@@ -613,10 +613,10 @@ public class OJKnowledgeRetriever {
 > **当前项目落地状态（2026-04-28）**
 > - 文档层已明确 `knowledge/*.md` 的 `---` 分块规范（200-400字/条）与质检标准；
 > - 仓库已落地 `KnowledgeInitializer`、`KnowledgeImportController`、`QuestionVectorSyncJob`，知识库初始化、管理员手动导入、题目向量定时同步三条链路均已具备真实代码；
-> - `KnowledgeInitializer.parseAndStore(...)` 已支持 `---` 分块解析、元数据校验（含 `image_urls`、`source_type` 新字段）、异常条目跳过、长度告警、导入后清理 RAG 缓存；
+> - `KnowledgeInitializer.parseAndStore(...)` 已支持 `---` 分块解析、元数据校验（含 `image_urls`、`image_refs`、`source_type` 字段）、异常条目跳过、长度告警、导入后清理 RAG 缓存；
 > - `KnowledgeImportController` 已扩展支持 `.md` / `.pdf` / `.docx` 三种格式，通过 `DocumentParser` 策略模式路由，超过 10MB 的大文件走 `KnowledgeImportAsyncService` 异步处理；
-> - PDF/Word 解析器（`PdfDocumentParser`、`WordDocumentParser`）已实现文本提取 + 按章节标题智能切片 + 图片提取上传 MinIO，图片 URL 以逗号分隔存入 chunk 的 `image_urls` metadata；
-> - RAG 检索侧已通过 `ImageAwareContentRetriever` 装饰器实现图片感知，检索到含图片的 chunk 时自动在上下文中追加 markdown 图片引用；
+> - PDF/Word 解析器（`PdfDocumentParser`、`WordDocumentParser`）已实现文本提取 + 按章节标题智能切片 + 图片提取上传 MinIO，图片通过空间定位（Y 坐标匹配）和语义匹配（术语重叠）精准分配到对应 chunk，生成 `image_urls`（逗号分隔 URL）和 `image_refs`（JSON 数组，含 url/title/tag/nearbyText/page）两层 metadata；
+> - RAG 检索侧通过 `ImageAwareContentRetriever` 装饰器 + `RagImageSupport` 工具类实现图片精准匹配：解析 `image_refs` 按 query 术语相关性过滤，只将相关图片注入 LLM 上下文，兼容仅有 `image_urls` 的旧 chunk（视觉类 query 时全量返回）；
 > - 防幻觉三层防线已落地：Prompt 硬约束 + 双集合 RAG + `LinkValidationFilter` 输出层链接校验。
 > **原则**：每条知识点独立、完整，过长则拆分，过短则合并。分块质量是比混合检索更有效的精度提升手段。
 

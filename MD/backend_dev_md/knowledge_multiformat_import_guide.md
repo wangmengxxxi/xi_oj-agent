@@ -711,7 +711,7 @@ public class KnowledgeImportController {
 
 ---
 
-## 八、Metadata 扩展：image_url 字段
+## 八、Metadata 扩展：image_urls 与 image_refs 字段
 
 ### 8.1 现有 metadata 结构
 
@@ -728,6 +728,7 @@ content_type: 知识点
 tag: 二分查找
 title: 二分查找基础模板与核心思想
 image_urls: http://minio:9000/oj-knowledge-images/xxx1.png,http://minio:9000/oj-knowledge-images/xxx2.png
+image_refs: [{"url":"http://...xxx1.png","title":"二分查找基础模板与核心思想","tag":"二分查找","nearbyText":"图 10-2 二分查找示意图...","caption":"","page":3}]
 source_type: pdf
 ```
 
@@ -736,11 +737,16 @@ source_type: pdf
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | image_urls | String（可选） | 该知识块关联的图片 URL，多张图片以逗号分隔，存储在 MinIO `oj-knowledge-images` 桶 |
+| image_refs | String（可选） | JSON 数组，每张图片的结构化语义信息（url/title/tag/nearbyText/caption/page），用于检索时精准匹配 |
 | source_type | String（可选） | 来源格式：md / pdf / docx |
+
+`image_refs` 相比 `image_urls` 的优势：
+- `image_urls` 只有 URL，检索时无法判断图片与用户 query 的相关性，只能在"视觉类 query"时全量返回。
+- `image_refs` 携带每张图片的上下文语义（标题、标签、附近文本、页码），检索时可以按 query 相关性过滤，避免无关图片干扰 LLM。
 
 ### 8.3 KnowledgeInitializer.parseBlock 适配
 
-`parseBlock` 方法中已增加对新 metadata 字段的解析，并在 `buildSearchableText()` 中将图片信息写入可检索文本：
+`parseBlock` 方法中已增加对 `image_urls` 和 `image_refs` 两个 metadata 字段的解析，并在 `buildSearchableText()` 中将图片信息写入可检索文本：
 
 ```java
 // parseBlock 中提取可选 metadata 字段
@@ -748,14 +754,19 @@ String imageUrls = metadataMap.get("image_urls");
 if (imageUrls != null && !imageUrls.isBlank()) {
     segmentMetadata.put("image_urls", imageUrls);
 }
+String imageRefs = metadataMap.get("image_refs");
+if (imageRefs != null && !imageRefs.isBlank()) {
+    segmentMetadata.put("image_refs", imageRefs);
+}
 String sourceType = metadataMap.get("source_type");
 if (sourceType != null && !sourceType.isBlank()) {
     segmentMetadata.put("source_type", sourceType);
 }
 
-// buildSearchableText 中将图片信息写入可检索文本
+// buildSearchableText — 将图片语义信息写入 Embedding 文本
 private String buildSearchableText(String title, String tag,
-        String contentType, String sourceType, String imageUrls, String body) {
+        String contentType, String sourceType,
+        String imageUrls, String imageRefs, String body) {
     StringBuilder text = new StringBuilder();
     text.append("title: ").append(title).append("\n");
     text.append("tag: ").append(tag).append("\n");
@@ -765,16 +776,24 @@ private String buildSearchableText(String title, String tag,
     }
     if (imageUrls != null && !imageUrls.isBlank()) {
         text.append("has_images: true\n");
-        text.append("image_urls: ").append(imageUrls).append("\n");
+    }
+    if (imageRefs != null && !imageRefs.isBlank()) {
+        text.append("image_context: ").append(imageRefs).append("\n");
     }
     text.append("\n").append(body);
     return text.toString();
 }
 ```
 
+> **设计要点**：`image_refs` 的 JSON 内容被写入 `image_context:` 行参与 Embedding 计算，使得向量空间中"含图片的 chunk"与图片语义相关的 query 距离更近，提升图片召回率。
+
 ### 8.4 RAG 检索结果返回图片
 
-RAG 检索侧通过 `ImageAwareContentRetriever` 装饰器实现图片感知，它包装了 `oj_knowledge` 集合的 `EmbeddingStoreContentRetriever`。当检索到的 chunk 包含 `image_urls` metadata 时，自动在上下文中追加图片引用段：
+RAG 检索侧通过两层机制实现图片精准匹配：
+
+**第一层：`ImageAwareContentRetriever` 装饰器**
+
+包装 `oj_knowledge` 集合的 `EmbeddingStoreContentRetriever`，对每个检索结果调用 `RagImageSupport.appendRelevantImages()` 注入相关图片：
 
 ```java
 public class ImageAwareContentRetriever implements ContentRetriever {
@@ -784,29 +803,61 @@ public class ImageAwareContentRetriever implements ContentRetriever {
     @Override
     public List<Content> retrieve(Query query) {
         return delegate.retrieve(query).stream()
-                .map(this::enrichWithImages)
+                .map(content -> enrichWithImages(content, query.text()))
                 .toList();
     }
 
-    private Content enrichWithImages(Content content) {
+    private Content enrichWithImages(Content content, String query) {
         TextSegment segment = content.textSegment();
         if (segment == null) return content;
-        String imageUrls = segment.metadata().getString("image_urls");
-        if (imageUrls == null || imageUrls.isBlank()) return content;
-
-        StringBuilder enriched = new StringBuilder(segment.text());
-        enriched.append("\n\n[RAG_SOURCE_IMAGES]");
-        enriched.append("\nThe following Markdown images belong to this retrieved knowledge segment. ");
-        enriched.append("If they are relevant to the user's question, keep these image links in the answer.");
-        for (String url : imageUrls.split(",")) {
-            String trimmed = url.trim();
-            if (!trimmed.isEmpty()) {
-                enriched.append("\n![knowledge-image](").append(trimmed).append(")");
-            }
-        }
-        return Content.from(TextSegment.from(enriched.toString(), segment.metadata()));
+        String enriched = RagImageSupport.appendRelevantImages(segment, query);
+        return enriched.equals(segment.text())
+                ? content
+                : Content.from(TextSegment.from(enriched, segment.metadata()));
     }
 }
+```
+
+**第二层：`RagImageSupport` 图片相关性过滤**
+
+核心工具类，负责判断每张图片是否与用户 query 相关：
+
+```java
+public static String appendRelevantImages(TextSegment segment, String query) {
+    List<ImageRef> refs = relevantImages(segment.metadata(), query, segment.text());
+    if (refs.isEmpty()) return segment.text();
+    StringBuilder sb = new StringBuilder(segment.text());
+    sb.append("\n\n[RAG_SOURCE_IMAGES]");
+    sb.append("\nOnly keep the following image links when they directly support the answer.");
+    for (ImageRef ref : refs) {
+        sb.append("\n![knowledge-image](").append(ref.url()).append(")");
+    }
+    return sb.toString();
+}
+```
+
+图片相关性判断采用**双路径策略**：
+
+| 路径 | 触发条件 | 过滤逻辑 |
+|------|----------|----------|
+| 新路径（`image_refs` 存在） | chunk 含 `image_refs` JSON metadata | 解析每张图片的语义文本（title + tag + nearbyText + caption），与 query 做术语重叠匹配，只返回相关图片 |
+| 兼容路径（仅 `image_urls`） | chunk 只有 `image_urls`，无 `image_refs` | 仅当 query 包含视觉类关键词（"图"、"示意"、"流程"、"结构"等）时才返回图片，避免无关图片干扰 |
+
+`isRelevant()` 三级判断：
+1. query 归一化后是否为图片语义文本的子串（直接命中）
+2. query 术语集与图片术语集是否有交集（领域术语匹配，含 dfs/bfs/dp/二叉树/排序等 30+ 算法领域词）
+3. query 是否为视觉类 query 且图片附近文本与 chunk 文本有语义重叠（兜底）
+
+**`ImageRef` 数据结构**：
+
+```java
+public record ImageRef(String url, String title, String tag,
+                       String nearbyText, String caption, Integer page) {
+    public String semanticText() {
+        return String.join(" ", title, tag, caption, nearbyText);
+    }
+}
+```
 ```
 
 在 `AiModelHolder.buildRetrievalAugmentor()` 中，`ImageAwareContentRetriever` 包装了 `oj_knowledge` 的 base retriever，与 `oj_question` retriever 一起注册到 `DefaultQueryRouter`：

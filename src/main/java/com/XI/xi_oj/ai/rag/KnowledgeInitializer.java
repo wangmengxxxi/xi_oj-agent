@@ -203,12 +203,16 @@ public class KnowledgeInitializer implements CommandLineRunner {
         if (imageUrls != null && !imageUrls.isBlank()) {
             segmentMetadata.put("image_urls", imageUrls);
         }
+        String imageRefs = metadataMap.get("image_refs");
+        if (imageRefs != null && !imageRefs.isBlank()) {
+            segmentMetadata.put("image_refs", imageRefs);
+        }
         String sourceType = metadataMap.get("source_type");
         if (sourceType != null && !sourceType.isBlank()) {
             segmentMetadata.put("source_type", sourceType);
         }
 
-        String fullText = buildSearchableText(title, tag, contentType, sourceType, imageUrls, body);
+        String fullText = buildSearchableText(title, tag, contentType, sourceType, imageUrls, imageRefs, body);
         return TextSegment.from(fullText, Metadata.from(segmentMetadata));
     }
 
@@ -217,6 +221,7 @@ public class KnowledgeInitializer implements CommandLineRunner {
                                        String contentType,
                                        String sourceType,
                                        String imageUrls,
+                                       String imageRefs,
                                        String body) {
         StringBuilder text = new StringBuilder();
         text.append("title: ").append(title).append("\n");
@@ -227,7 +232,9 @@ public class KnowledgeInitializer implements CommandLineRunner {
         }
         if (imageUrls != null && !imageUrls.isBlank()) {
             text.append("has_images: true\n");
-            text.append("image_urls: ").append(imageUrls).append("\n");
+        }
+        if (imageRefs != null && !imageRefs.isBlank()) {
+            text.append("image_context: ").append(imageRefs).append("\n");
         }
         text.append("\n").append(body);
         return text.toString();

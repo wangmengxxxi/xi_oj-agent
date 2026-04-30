@@ -18,30 +18,18 @@ public class ImageAwareContentRetriever implements ContentRetriever {
     @Override
     public List<Content> retrieve(Query query) {
         return delegate.retrieve(query).stream()
-                .map(this::enrichWithImages)
+                .map(content -> enrichWithImages(content, query.text()))
                 .toList();
     }
 
-    private Content enrichWithImages(Content content) {
+    private Content enrichWithImages(Content content, String query) {
         TextSegment segment = content.textSegment();
         if (segment == null) {
             return content;
         }
-        String imageUrls = segment.metadata().getString("image_urls");
-        if (imageUrls == null || imageUrls.isBlank()) {
-            return content;
-        }
-
-        StringBuilder enriched = new StringBuilder(segment.text());
-        enriched.append("\n\n[RAG_SOURCE_IMAGES]");
-        enriched.append("\nThe following Markdown images belong to this retrieved knowledge segment. ");
-        enriched.append("If they are relevant to the user's question, keep these image links in the answer.");
-        for (String url : imageUrls.split(",")) {
-            String trimmed = url.trim();
-            if (!trimmed.isEmpty()) {
-                enriched.append("\n![knowledge-image](").append(trimmed).append(")");
-            }
-        }
-        return Content.from(TextSegment.from(enriched.toString(), segment.metadata()));
+        String enriched = RagImageSupport.appendRelevantImages(segment, query);
+        return enriched.equals(segment.text())
+                ? content
+                : Content.from(TextSegment.from(enriched, segment.metadata()));
     }
 }

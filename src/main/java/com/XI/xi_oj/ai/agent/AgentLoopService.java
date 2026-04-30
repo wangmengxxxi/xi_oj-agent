@@ -5,8 +5,10 @@ import cn.hutool.json.JSONUtil;
 import com.XI.xi_oj.ai.filter.LinkValidationFilter;
 import com.XI.xi_oj.ai.rag.OJKnowledgeRetriever;
 import com.XI.xi_oj.ai.rag.QueryRewriter;
+import com.XI.xi_oj.ai.rag.RagImageSupport;
 import com.XI.xi_oj.ai.rag.RerankService;
 import com.XI.xi_oj.service.AiConfigService;
+import com.XI.xi_oj.utils.TimeUtil;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -28,7 +30,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -339,7 +341,7 @@ public class AgentLoopService {
         });
 
         try {
-            boolean finished = latch.await(120, TimeUnit.SECONDS);
+            boolean finished = latch.await(120, java.util.concurrent.TimeUnit.SECONDS);
             if (!finished) {
                 log.warn("[AgentLoop-Stream] streaming step timed out after 120s");
             }
@@ -419,7 +421,7 @@ public class AgentLoopService {
             int topK = intConfig("ai.rag.top_k", 5);
             double minScore = doubleConfig("ai.rag.similarity_threshold", 0.5);
 
-            List<Content> contents = ojKnowledgeRetriever.retrieveAsContents(rewritten, topK, minScore);
+            List<Content> contents = ojKnowledgeRetriever.retrieveAsContents(rewritten, topK * 2, minScore);
             if (contents.isEmpty()) {
                 return "";
             }
@@ -432,7 +434,7 @@ public class AgentLoopService {
 
             return contents.stream()
                     .filter(c -> c.textSegment() != null)
-                    .map(c -> formatSegmentWithImages(c.textSegment()))
+                    .map(c -> formatSegmentWithImages(c.textSegment(), rewritten))
                     .collect(Collectors.joining("\n\n"));
         } catch (Exception e) {
             log.warn("[AgentLoop] RAG retrieval failed: {}", e.getMessage());
@@ -440,20 +442,8 @@ public class AgentLoopService {
         }
     }
 
-    private String formatSegmentWithImages(dev.langchain4j.data.segment.TextSegment segment) {
-        String text = segment.text();
-        String imageUrls = segment.metadata().getString("image_urls");
-        if (imageUrls == null || imageUrls.isBlank()) {
-            return text;
-        }
-        StringBuilder sb = new StringBuilder(text);
-        for (String url : imageUrls.split(",")) {
-            String trimmed = url.trim();
-            if (!trimmed.isEmpty()) {
-                sb.append("\n![配图](").append(trimmed).append(")");
-            }
-        }
-        return sb.toString();
+    private String formatSegmentWithImages(dev.langchain4j.data.segment.TextSegment segment, String query) {
+        return RagImageSupport.appendRelevantImages(segment, query);
     }
 
     private int intConfig(String key, int fallback) {
@@ -485,9 +475,4 @@ public class AgentLoopService {
         return normalized.substring(0, maxLength) + "...";
     }
 
-    public record AgentResult(String answer, List<AgentStep> steps) {
-        static AgentResult of(String answer, List<AgentStep> steps) {
-            return new AgentResult(answer, steps);
-        }
-    }
 }

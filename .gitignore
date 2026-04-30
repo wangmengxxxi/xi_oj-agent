@@ -1,9 +1,16 @@
 ### @author <a href="https://github.com/liyupi">程序员鱼皮</a> ###
 ### @from <a href="https://yupi.icu">编程导航知识星球</a> ###
 .m2repo/
+.claude/
+node_modules/
+**/node_modules/
 .tmp-method-check/
+.tmp*/
+.tmp_*
+_Tmp*
 .mvn-settings*.xml
 pom_head_restore.xml
+OJ+Agent
 .DS_Store
 **/.DS_Store
 .tmp_milvus_jar
@@ -12,6 +19,10 @@ target/
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
+.tmp_milvus_javap.txt
+.tmp_msg_mem.txt
+.tmp_msg_mem_builder.txt
+replay_pid*.log
 
 ### STS ###
 .apt_generated

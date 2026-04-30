@@ -2,6 +2,7 @@ package com.XI.xi_oj.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
 import com.XI.xi_oj.ai.agent.AgentLoopService;
+import com.XI.xi_oj.ai.agent.AgentResult;
 import com.XI.xi_oj.ai.agent.AiModelHolder;
 import com.XI.xi_oj.ai.filter.LinkValidationFilter;
 import com.XI.xi_oj.ai.model.AiChatHistoryPageRequest;
@@ -21,10 +22,20 @@ import reactor.core.publisher.Flux;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @Slf4j
 public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRecord> implements AiChatService {
+
+    private static final AtomicInteger AGENT_STREAM_THREAD_ID = new AtomicInteger(1);
+    private static final ExecutorService AGENT_STREAM_EXECUTOR = Executors.newCachedThreadPool(r -> {
+        Thread thread = new Thread(r, "ai-agent-stream-" + AGENT_STREAM_THREAD_ID.getAndIncrement());
+        thread.setDaemon(true);
+        return thread;
+    });
 
     @Resource
     private AiModelHolder aiModelHolder;
@@ -63,7 +74,7 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
         try {
             String answer;
             if (isAdvancedAgentMode()) {
-                AgentLoopService.AgentResult result = agentLoopService.run(enrichedMessage, userId);
+                AgentResult result = agentLoopService.run(enrichedMessage, userId);
                 answer = result.answer();
                 agentTraceService.saveTraceAsync(userId, chatId, message, result.steps());
             } else {
@@ -89,7 +100,7 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
         String enrichedMessage = buildContextualMessage(questionId, userId, message);
         if (isAdvancedAgentMode()) {
             return Flux.<String>create(sink -> {
-                Thread.startVirtualThread(() -> {
+                AGENT_STREAM_EXECUTOR.execute(() -> {
                     OJTools.setCurrentUserId(userId);
                     try {
                         log.info("[AI Chat] advanced agent stream, userId={}, chatId={}", userId, chatId);

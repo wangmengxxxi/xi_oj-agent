@@ -346,7 +346,9 @@ flowchart LR
 > 2. **QueryRouter** → `DefaultQueryRouter`：将改写后的 query 同时发给两个 `ContentRetriever`（`oj_knowledge` + `oj_question`）
 > 3. **ContentAggregator** → `RerankingContentAggregator`：合并两个 Retriever 的结果后，调用 DashScope Rerank API 精排，取 TopN
 >
-> `oj_knowledge` 的 retriever 被 `ImageAwareContentRetriever` 装饰器包装：当检索到的 chunk 包含 `image_urls` metadata 时，自动在上下文中追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用。
+> `oj_knowledge` 的 retriever 被 `ImageAwareContentRetriever` 装饰器包装：当检索到的 chunk 包含 `image_urls` 或 `image_refs` metadata 时，通过 `RagImageSupport.appendRelevantImages()` 按 query 相关性过滤图片，只将相关图片以 `[RAG_SOURCE_IMAGES]` 段注入 LLM 上下文。
+>
+> 图片来源：PDF/Word 导入时由 `PdfDocumentParser` / `WordDocumentParser` 提取页面图片，上传 MinIO 后将 URL 和语义信息（标题、标签、附近文本、页码）写入 chunk 的 `image_refs` metadata（JSON 数组）。`RagImageSupport` 在检索时解析 `image_refs`，对每张图片做术语重叠匹配，只返回与 query 相关的图片，避免无关图片干扰 LLM 生成。
 >
 > `oj_question` 集合的向量文本包含题目 ID 和链接（如 `/view/question/42`），LLM 可以直接引用真实链接，避免编造。
 
@@ -357,7 +359,7 @@ flowchart LR
 | 层面 | 机制 | 实现 |
 |------|------|------|
 | Prompt 层 | System Prompt 中 6 条硬约束 | 禁止编造题目名称/ID/链接，推荐题目必须先调用工具，搜不到则说"平台暂无相关练习题" |
-| 架构层 | 双集合 RAG + 图片感知 | `oj_question` 向量文本内嵌真实题目 ID 和链接；`ImageAwareContentRetriever` 自动携带图片引用 |
+| 架构层 | 双集合 RAG + 图片精准匹配 | `oj_question` 向量文本内嵌真实题目 ID 和链接；`ImageAwareContentRetriever` + `RagImageSupport` 按 query 相关性过滤图片，避免无关图片干扰 |
 | 输出层 | `LinkValidationFilter` 后置过滤 | 正则匹配回答中所有 `/view/question/{id}` 链接，逐一查库验证，不存在的链接自动剥离（流式场景下缓冲处理避免链接被截断） |
 
 问题（优化前的原始架构，已全部修复）：
