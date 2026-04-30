@@ -1,6 +1,7 @@
 package com.XI.xi_oj.ai.rag.parser;
 
 import com.XI.xi_oj.ai.rag.RagImageSupport;
+import com.XI.xi_oj.ai.rag.VisionModelHolder;
 import com.XI.xi_oj.common.ErrorCode;
 import com.XI.xi_oj.exception.BusinessException;
 import com.XI.xi_oj.manager.MinioService;
@@ -35,6 +36,11 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -48,6 +54,7 @@ public class PdfDocumentParser implements DocumentParser {
     private static final int MAX_TITLE_LENGTH = 60;
     private static final int MIN_IMAGE_SIZE = 5000;
     private static final int MAX_IMAGE_DIMENSION = 1600;
+    private static final int VL_IMAGE_DIMENSION = 512;
     private static final float IMAGE_VERTICAL_MARGIN = 120F;
     private static final int MAX_IMAGE_NEARBY_TEXT_LENGTH = 260;
 
@@ -90,9 +97,11 @@ public class PdfDocumentParser implements DocumentParser {
     );
 
     private final MinioService minioService;
+    private final VisionModelHolder visionModelHolder;
 
-    public PdfDocumentParser(MinioService minioService) {
+    public PdfDocumentParser(MinioService minioService, VisionModelHolder visionModelHolder) {
         this.minioService = minioService;
+        this.visionModelHolder = visionModelHolder;
     }
 
     @Override
@@ -107,6 +116,12 @@ public class PdfDocumentParser implements DocumentParser {
 
     @Override
     public ParseResult parseWithImages(InputStream inputStream, String filename) {
+        return parseWithImages(inputStream, filename, ImportProgressCallback.noop());
+    }
+
+    @Override
+    public ParseResult parseWithImages(InputStream inputStream, String filename,
+                                        ImportProgressCallback callback) {
         try (PDDocument document = Loader.loadPDF(inputStream.readAllBytes())) {
             String fullText = extractText(document);
             if (fullText == null || fullText.isBlank()) {
@@ -122,8 +137,16 @@ public class PdfDocumentParser implements DocumentParser {
                 throw new BusinessException(ErrorCode.PARAMS_ERROR,
                         "No valid knowledge chunks were generated from PDF.");
             }
+            callback.onStep("解析文档", 10);
 
-            Map<Integer, List<ImageRefCandidate>> pageImages = extractAndUploadImages(document, filename, pageLines);
+            Map<String, byte[]> imageDataMap = new HashMap<>();
+            Map<Integer, List<ImageRefCandidate>> pageImages = extractAndUploadImages(document, filename, pageLines, imageDataMap);
+            callback.onStep("上传图片", 30);
+
+            enrichCaptionsWithVL(pageImages, imageDataMap, callback);
+            imageDataMap.clear();
+            callback.onStep("生成图片描述", 70);
+
             assignImagesToChunks(chunks, pageImages, pageRanges, pageLines);
 
             List<String> allImageUrls = new ArrayList<>();
@@ -253,7 +276,8 @@ public class PdfDocumentParser implements DocumentParser {
 
     private Map<Integer, List<ImageRefCandidate>> extractAndUploadImages(PDDocument document,
                                                                          String filename,
-                                                                         Map<Integer, List<PositionedLine>> pageLines) {
+                                                                         Map<Integer, List<PositionedLine>> pageLines,
+                                                                         Map<String, byte[]> imageDataMap) {
         Map<Integer, List<ImageRefCandidate>> pageImages = new HashMap<>();
         String prefix = "knowledge/" + filename.replaceAll("[^a-zA-Z0-9._-]", "_");
 
@@ -278,16 +302,24 @@ public class PdfDocumentParser implements DocumentParser {
                         continue;
                     }
 
-                    buffered = scaleIfNeeded(buffered);
-                    byte[] pngBytes = toPngBytes(buffered);
-                    buffered.flush();
+                    BufferedImage forUpload = scaleIfNeeded(buffered);
+                    byte[] pngBytes = toPngBytes(forUpload);
 
                     if (pngBytes.length < MIN_IMAGE_SIZE) {
+                        if (forUpload != buffered) forUpload.flush();
+                        buffered.flush();
                         continue;
                     }
 
                     String objectName = MinioService.generateObjectName(prefix, "_p" + pageIdx + "_" + imgIdx + ".png");
                     String url = minioService.uploadImage(pngBytes, objectName, "image/png");
+
+                    BufferedImage vlScaled = scaleForVL(buffered);
+                    byte[] vlBytes = toPngBytes(vlScaled);
+                    if (vlScaled != buffered) vlScaled.flush();
+                    if (forUpload != buffered) forUpload.flush();
+                    buffered.flush();
+                    imageDataMap.put(url, vlBytes);
                     Float centerY = firstCenterY(positionsByName.get(name));
                     String nearbyText = buildNearbyText(pageLines.get(pageIdx), centerY);
                     String caption = extractCaption(pageLines.get(pageIdx), centerY);
@@ -300,6 +332,73 @@ public class PdfDocumentParser implements DocumentParser {
             }
         }
         return pageImages;
+    }
+
+    private static final int VL_BATCH_SIZE = 20;
+
+    private void enrichCaptionsWithVL(Map<Integer, List<ImageRefCandidate>> pageImages,
+                                       Map<String, byte[]> imageDataMap,
+                                       ImportProgressCallback callback) {
+        if (!visionModelHolder.isAvailable()) {
+            return;
+        }
+        List<Map.Entry<Integer, Integer>> captionlessIndices = new ArrayList<>();
+        for (Map.Entry<Integer, List<ImageRefCandidate>> entry : pageImages.entrySet()) {
+            List<ImageRefCandidate> candidates = entry.getValue();
+            for (int i = 0; i < candidates.size(); i++) {
+                if (candidates.get(i).caption() == null || candidates.get(i).caption().isBlank()) {
+                    captionlessIndices.add(Map.entry(entry.getKey(), i));
+                }
+            }
+        }
+        if (captionlessIndices.isEmpty()) {
+            return;
+        }
+
+        int total = captionlessIndices.size();
+        AtomicInteger completed = new AtomicInteger(0);
+        int concurrency = visionModelHolder.getConcurrency();
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+
+        try {
+            for (int batchStart = 0; batchStart < total; batchStart += VL_BATCH_SIZE) {
+                int batchEnd = Math.min(batchStart + VL_BATCH_SIZE, total);
+                List<Map.Entry<Integer, Integer>> batch = captionlessIndices.subList(batchStart, batchEnd);
+
+                List<CompletableFuture<Void>> futures = batch.stream()
+                        .map(idx -> CompletableFuture.runAsync(() -> {
+                            int pageIdx = idx.getKey();
+                            int imgIdx = idx.getValue();
+                            ImageRefCandidate original = pageImages.get(pageIdx).get(imgIdx);
+                            byte[] data = imageDataMap.get(original.url());
+                            if (data != null) {
+                                String caption = visionModelHolder.generateCaption(data, "image/png");
+                                if (!caption.isBlank()) {
+                                    pageImages.get(pageIdx).set(imgIdx, new ImageRefCandidate(
+                                            original.url(), original.pageIndex(), original.imageIndex(),
+                                            original.centerY(), original.nearbyText(), caption));
+                                }
+                            }
+                            callback.onImageCaptionProgress(completed.incrementAndGet(), total);
+                        }, executor))
+                        .toList();
+
+                try {
+                    CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+                            .get(5, TimeUnit.MINUTES);
+                } catch (Exception e) {
+                    log.warn("[PDF Parser] VL batch timeout/error at batch {}-{}: {}",
+                            batchStart, batchEnd, e.getMessage());
+                }
+
+                for (Map.Entry<Integer, Integer> idx : batch) {
+                    imageDataMap.remove(pageImages.get(idx.getKey()).get(idx.getValue()).url());
+                }
+            }
+            log.info("[PDF Parser] VL caption generated for {}/{} images", completed.get(), total);
+        } finally {
+            executor.shutdown();
+        }
     }
 
     private Map<COSName, List<PositionedImage>> groupPositionsByName(List<PositionedImage> positionedImages) {
@@ -325,12 +424,20 @@ public class PdfDocumentParser implements DocumentParser {
     }
 
     private BufferedImage scaleIfNeeded(BufferedImage original) {
+        return scaleToMax(original, MAX_IMAGE_DIMENSION);
+    }
+
+    private BufferedImage scaleForVL(BufferedImage original) {
+        return scaleToMax(original, VL_IMAGE_DIMENSION);
+    }
+
+    private BufferedImage scaleToMax(BufferedImage original, int maxDim) {
         int w = original.getWidth();
         int h = original.getHeight();
-        if (w <= MAX_IMAGE_DIMENSION && h <= MAX_IMAGE_DIMENSION) {
+        if (w <= maxDim && h <= maxDim) {
             return original;
         }
-        double scale = Math.min((double) MAX_IMAGE_DIMENSION / w, (double) MAX_IMAGE_DIMENSION / h);
+        double scale = Math.min((double) maxDim / w, (double) maxDim / h);
         int newW = (int) (w * scale);
         int newH = (int) (h * scale);
         BufferedImage scaled = new BufferedImage(newW, newH, BufferedImage.TYPE_INT_RGB);
@@ -339,7 +446,6 @@ public class PdfDocumentParser implements DocumentParser {
                 java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
         g.drawImage(original, 0, 0, newW, newH, null);
         g.dispose();
-        original.flush();
         return scaled;
     }
 

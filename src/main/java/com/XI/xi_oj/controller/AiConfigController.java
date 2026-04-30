@@ -38,7 +38,8 @@ public class AiConfigController {
             "ai.rerank.enabled", "ai.rerank.model_name", "ai.rerank.endpoint", "ai.rerank.top_n",
             "ai.agent.mode", "ai.agent.max_steps", "ai.agent.tool_max_retry",
             "ai.prompt.code_analysis", "ai.prompt.wrong_analysis", "ai.prompt.question_parse",
-            "ai.prompt.chat_system", "ai.prompt.agent_system"
+            "ai.prompt.chat_system", "ai.prompt.agent_system",
+            "ai.vl.model_name", "ai.vl.concurrency"
     );
 
     private static final Set<String> ENCRYPTED_KEYS = Set.of(

@@ -380,7 +380,7 @@ image_refs
     "title": "排序算法",
     "tag": "排序算法",
     "nearbyText": "图附近的文本内容",
-    "caption": "",
+    "caption": "这张图展示了冒泡排序的交换过程，相邻元素逐步比较并交换位置",
     "page": 219
   }
 ]
@@ -394,7 +394,7 @@ image_refs
 | `title` | 所属 chunk 标题 |
 | `tag` | 所属知识标签 |
 | `nearbyText` | 图片附近的 PDF 文本 |
-| `caption` | 预留图注字段 |
+| `caption` | VL 视觉模型生成的图片描述（导入时由 Qwen-VL 自动生成） |
 | `page` | PDF 页码 |
 
 ### 9.3 image_refs 的价值
@@ -408,10 +408,13 @@ image_refs
 升级为：
 
 ```text
-每张图片大概和什么知识内容相关
+每张图片大概和什么知识内容相关，图片里画的是什么
 ```
 
-这样在最终回答前，可以根据用户 query 对图片做相关性过滤。
+其中 `caption` 字段由 VL 视觉模型（Qwen-VL）在导入时自动生成，用一句话描述图片内容（如"这张图展示了二叉树的层序遍历过程"）。这个描述在两个环节发挥作用：
+
+1. **导入时**：帮助将图片分配到语义最相关的 chunk（通过 `hasMeaningfulOverlap` 匹配 caption 与 chunk 文本），而不是粗暴地全部挂到第一个 chunk。
+2. **检索时**：caption 随 `image_refs` 传给 LLM，LLM 能理解图片画的是什么，从而更准确地决定是否在回答中引用该图片。
 
 ---
 
@@ -429,11 +432,13 @@ image_refs
   -> 按标题和长度生成 chunk
   -> 按页提取文本行位置
   -> 提取图片对象
+  -> 缩放图片（1600px 上传 MinIO，512px 用于 VL 描述）
   -> 计算图片在页面中的位置
   -> 为图片寻找附近文本
-  -> 判断图片是否属于当前 chunk
+  -> VL 视觉模型并发生成图片描述（caption）
+  -> 根据 caption + 位置 + 附近文本判断图片属于哪个 chunk
   -> 生成 image_urls
-  -> 生成 image_refs
+  -> 生成 image_refs（含 caption）
   -> 输出 markdown block
   -> KnowledgeInitializer 写入 Milvus
 ```
@@ -443,8 +448,10 @@ image_refs
 1. 不再只按页码把图片粗暴挂到 chunk 上。
 2. 会提取图片的页面位置。
 3. 会提取图片附近文本。
-4. 会根据 chunk 的标题、标签、正文和图片附近文本判断相关性。
-5. 会写入 `image_refs`，供检索时二次过滤。
+4. 会用 VL 视觉模型（Qwen-VL）为每张图片生成一句话描述，写入 `caption` 字段。
+5. 会根据 chunk 的标题、标签、正文和图片 caption / 附近文本判断相关性。
+6. 会写入 `image_refs`（含 caption），供检索时 LLM 理解图片内容。
+7. VL 处理使用 512px 缩略图以节省内存和 API 开销，分批并发调用（每批 20 张），单张超时 30s。
 
 这对 `hello-algo_1.3.0_zh_java.pdf` 这种图文密集教材尤其重要。
 
@@ -614,7 +621,7 @@ ai:rag:cache:
   -> AiConfigServiceImpl 保存配置
   -> applicationEventPublisher.publishEvent(...)
   -> @EventListener 监听配置变化
-  -> AiModelHolder / QueryRewriter 按 key 重建相关对象
+  -> AiModelHolder / QueryRewriter / VisionModelHolder 按 key 重建相关对象
 ```
 
 支持热更新的 RAG 相关配置包括：
@@ -625,12 +632,14 @@ ai:rag:cache:
 4. Rerank 相关开关和模型配置
 5. Chat model / embedding model 配置
 6. Prompt 配置
+7. VL 视觉模型配置（`ai.vl.model_name`、`ai.vl.concurrency`）
 
 优势：
 
 1. 调整 RAG 参数不需要重启服务。
 2. 切换模型供应商后，相关 agent 会重建。
 3. RAG 调参可以通过前端管理页完成。
+4. VL 模型名称或并发数修改后，`VisionModelHolder` 即时重建。
 
 ---
 
@@ -704,7 +713,7 @@ Agent Loop 每次执行会记录完整的推理轨迹，包括每一步的 Thoug
    向量召回后进行精排，提高 TopK 上下文质量。
 
 6. **图片 RAG 工程化**
-   从简单 `image_urls` 升级到结构化 `image_refs`，支持按图片语义过滤。
+   从简单 `image_urls` 升级到结构化 `image_refs`，集成 VL 视觉模型自动生成图片描述，支持按图片语义过滤。
 
 7. **PDF 图文关联更准确**
    结合图片页面位置、附近文本、chunk 标题和标签判断图片归属。
@@ -741,20 +750,23 @@ Agent Loop 每次执行会记录完整的推理轨迹，包括每一步的 Thoug
 4. 重新导入 PDF。
 5. 等待异步导入任务完成。
 
-对于 `hello-algo_1.3.0_zh_java.pdf` 这类超过 10MB 的文件，当前项目会走异步导入：
+对于 PDF/DOCX 文件，当前项目统一走异步导入（不再有 10MB 阈值），因为 VL 图片描述生成需要较长时间：
 
 ```text
 KnowledgeImportController
   -> KnowledgeImportAsyncService.importAsync(...)
+  -> VisionModelHolder 并发生成图片描述
+  -> 前端通过 taskId 轮询进度条
 ```
 
-图片处理会增加一定耗时，主要新增开销为：
+图片处理的主要耗时来源：
 
-1. 提取图片位置。
-2. 提取图片附近文本。
-3. 生成 `image_refs`。
+1. 提取图片位置和附近文本。
+2. 上传图片到 MinIO。
+3. VL 视觉模型并发生成图片描述（每张约 2-5 秒，分批 20 张并发，并发数可配置）。
+4. 生成 `image_refs`。
 
-整体大头仍然通常是 embedding、Milvus 写入和 MinIO 上传图片。
+VL 描述生成是新增的主要耗时环节。前端通过进度条实时展示导入进度（解析文档 → 上传图片 → 生成图片描述 → 写入向量库）。
 
 ---
 
@@ -768,16 +780,13 @@ KnowledgeImportController
 2. **按文件删除知识**
    支持按 `source_file` 删除对应向量和 MinIO 图片，而不是每次清空整个 collection。
 
-3. **图片 caption / OCR**
-   对图片做 OCR 或视觉模型 caption，补充 `caption` 字段，提高图片匹配准确率。
-
-4. **RAG 评估常态化**
+3. **RAG 评估常态化**
    将 `RagEvaluationTest` 做成固定评估集，持续观察 Recall@K、MRR、Rerank 命中率。
 
-5. **可观测性看板**
+4. **可观测性看板**
    统计 RAG 检索为空次数、Rerank 调用次数、图片过滤命中次数、假链接移除次数等。
 
-6. **chunk 删除和增量更新**
+5. **chunk 删除和增量更新**
    支持单文件增量重建，减少全量重导成本。
 
 ---
@@ -787,5 +796,5 @@ KnowledgeImportController
 当前 XI OJ 的 RAG 已经从基础向量检索，升级为：
 
 ```text
-可热更新、可精排、可按业务 metadata 过滤、支持双链路 Agent（含流式输出与执行轨迹记录）、支持图文知识库、并带输出防护的工程化 RAG 系统。
+可热更新、可精排、可按业务 metadata 过滤、支持双链路 Agent（含流式输出与执行轨迹记录）、支持图文知识库（VL 视觉模型自动生成图片描述）、并带输出防护的工程化 RAG 系统。
 ```

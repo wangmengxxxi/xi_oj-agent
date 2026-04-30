@@ -24,5 +24,10 @@ public interface DocumentParser {
         return new ParseResult(parse(inputStream, filename), Collections.emptyList());
     }
 
+    default ParseResult parseWithImages(InputStream inputStream, String filename,
+                                         ImportProgressCallback callback) {
+        return parseWithImages(inputStream, filename);
+    }
+
     record ParseResult(String markdownBlocks, List<String> imageUrls) {}
 }

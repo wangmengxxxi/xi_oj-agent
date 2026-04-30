@@ -64,12 +64,15 @@ AIGC 模块技术栈：LangChain4j + 多供应商热切换（百炼/DeepSeek/Ope
 - RAG 结果 Redis 缓存（TTL 60 分钟），cache key 使用 MD5 哈希保证固定长度
 - 知识导入 / 向量重建后自动清除 RAG 缓存
 - 知识库全生命周期：启动自动导入（CommandLineRunner）+ 管理员 API 导入 + 每日 2:00 题目向量全量重建
+- 图文知识库：PDF/Word 导入时提取图片上传 MinIO，VL 视觉模型（Qwen-VL）自动生成图片描述，`image_refs` 结构化存储图片语义信息，检索时按 query 相关性过滤图片
 
 ### AI 配置中心与 Prompt 动态治理
 
-- `ai_config` 表存储模型参数、RAG 参数、Prompt 模板，管理员后台实时修改
+- `ai_config` 表存储模型参数、RAG 参数、VL 视觉模型参数、Prompt 模板，管理员后台实时修改
+- 模型参数修改后通过 `AiConfigChangedEvent` 即时重建（`AiModelHolder`、`QueryRewriter`、`VisionModelHolder`）
 - Redis 缓存配置值（TTL 5 分钟），`__NULL__` 占位符防缓存穿透
 - Prompt 读取三层防护：空值回退 → 乱码检测（`looksLikeMojibake` 检测 GBK/UTF-8 误解码）→ 代码默认值兜底
+- VL 视觉模型配置（`ai.vl.model_name`、`ai.vl.concurrency`）支持热更新
 - API Key 仅从环境变量注入，禁止通过接口修改
 
 ### 全局开关 + 分层限流

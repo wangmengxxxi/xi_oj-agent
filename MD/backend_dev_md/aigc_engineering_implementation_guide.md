@@ -475,14 +475,16 @@ String ragContext = ojKnowledgeRetriever.retrieveByType(
 
 - `POST /admin/knowledge/import` 接受 `.md`、`.pdf`、`.docx` 文件上传。
 - 通过 `DocumentParser` 策略模式按文件扩展名路由到对应解析器：
-  - `.md` → 直接读取文本，复用 `KnowledgeInitializer.parseAndStore()` 解析逻辑。
-  - `.pdf` → `PdfDocumentParser`：PDFBox 提取文本 + 智能切片（按章节标题识别）+ 逐页图片提取上传 MinIO + 图片-chunk 空间匹配。
-  - `.docx` → `WordDocumentParser`：Apache POI 提取文本 + 段落切片 + 图片提取上传 MinIO。
+  - `.md` → 直接读取文本，复用 `KnowledgeInitializer.parseAndStore()` 解析逻辑（同步）。
+  - `.pdf` → `PdfDocumentParser`：PDFBox 提取文本 + 智能切片（按章节标题识别）+ 逐页图片提取上传 MinIO + VL 视觉模型生成图片描述 + 图片-chunk 语义匹配。
+  - `.docx` → `WordDocumentParser`：Apache POI 提取文本 + 段落切片 + 图片提取上传 MinIO + VL 视觉模型生成图片描述。
+- PDF/Word 统一走异步处理（`KnowledgeImportAsyncService`），返回 taskId，前端通过进度条轮询导入状态。
 - PDF/Word 使用 `parseWithImages()` 方法，返回 `ParseResult(markdownBlocks, imageUrls)`，同时提取文本和图片。
-- 图片处理流程：提取 → 过滤（跳过 < 5KB 的小图标）→ 缩放（> 1600px 等比缩小）→ 上传 MinIO → URL 写入 chunk 的 `image_urls` 和 `image_refs` metadata。
-- `image_refs` 是 JSON 数组，每张图片携带语义信息（url/title/tag/nearbyText/page），用于 RAG 检索时按 query 相关性精准过滤图片。
+- 图片处理流程：提取 → 过滤（跳过 < 5KB 的小图标）→ 缩放（1600px 上传 MinIO，512px 用于 VL 描述）→ 上传 MinIO → VL 视觉模型（Qwen-VL）并发生成图片描述 → URL 和描述写入 chunk 的 `image_urls` 和 `image_refs` metadata。
+- `image_refs` 是 JSON 数组，每张图片携带语义信息（url/title/tag/nearbyText/caption/page），其中 `caption` 由 VL 模型自动生成，用于 RAG 检索时按 query 相关性精准过滤图片。
+- `VisionModelHolder` 管理 VL 模型生命周期，支持热更新（`ai.vl.model_name`、`ai.vl.concurrency`），共用 DashScope API key。
 - 导入后自动清除 RAG 缓存。
-- 大文件（> 10MB）通过 `KnowledgeImportAsyncService` 异步处理，`Semaphore(2)` 控制并发。
+- `Semaphore(2)` 控制并发导入任务数。
 
 **题目向量定时同步（`QuestionVectorSyncJob`）：**
 
@@ -932,12 +934,13 @@ public void checkAiSwitch(JoinPoint joinPoint) {
                              ↓              └──────────────┘
                     ┌──────────────────┐
                     │  AiModelHolder   │
+                    │  VisionModelHolder│
                     │  即时重建模型/代理 │
                     └──────────────────┘
 ```
 
 **两类配置的生效方式：**
-- **模型/RAG 参数**（`ai.model.name`、`ai.model.embedding_name`、`ai.rag.top_k`、`ai.rag.similarity_threshold`）：修改后通过 `AiConfigChangedEvent` → `AiModelHolder.onConfigChanged()` **即时重建**受影响的模型和代理，无需重启。
+- **模型/RAG 参数**（`ai.model.name`、`ai.model.embedding_name`、`ai.rag.top_k`、`ai.rag.similarity_threshold`、`ai.vl.model_name`、`ai.vl.concurrency`）：修改后通过 `AiConfigChangedEvent` → `AiModelHolder.onConfigChanged()` / `VisionModelHolder.onConfigChanged()` **即时重建**受影响的模型和代理，无需重启。
 - **Prompt/开关类配置**（`ai.prompt.*`、`ai.global.enable`）：每次请求时从 Redis 读取，Redis TTL 5 分钟后回源 MySQL，最多 5 分钟生效。
 
 可动态配置的参数（白名单）：
@@ -945,6 +948,8 @@ public void checkAiSwitch(JoinPoint joinPoint) {
 - `ai.model.embedding_name`：Embedding 模型名称
 - `ai.rag.top_k`：RAG 检索 TopK
 - `ai.rag.similarity_threshold`：RAG 相似度阈值
+- `ai.vl.model_name`：VL 视觉模型名称（用于图片描述生成，如 qwen-vl-plus）
+- `ai.vl.concurrency`：VL 模型并发调用数（默认 4，范围 1-16）
 - `ai.prompt.code_analysis`：代码分析 Prompt 模板
 - `ai.prompt.wrong_analysis`：错题分析 Prompt 模板
 - `ai.prompt.question_parse`：题目解析 Prompt 模板

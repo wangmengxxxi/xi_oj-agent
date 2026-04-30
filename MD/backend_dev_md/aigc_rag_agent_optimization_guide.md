@@ -348,7 +348,7 @@ flowchart LR
 >
 > `oj_knowledge` 的 retriever 被 `ImageAwareContentRetriever` 装饰器包装：当检索到的 chunk 包含 `image_urls` 或 `image_refs` metadata 时，通过 `RagImageSupport.appendRelevantImages()` 按 query 相关性过滤图片，只将相关图片以 `[RAG_SOURCE_IMAGES]` 段注入 LLM 上下文。
 >
-> 图片来源：PDF/Word 导入时由 `PdfDocumentParser` / `WordDocumentParser` 提取页面图片，上传 MinIO 后将 URL 和语义信息（标题、标签、附近文本、页码）写入 chunk 的 `image_refs` metadata（JSON 数组）。`RagImageSupport` 在检索时解析 `image_refs`，对每张图片做术语重叠匹配，只返回与 query 相关的图片，避免无关图片干扰 LLM 生成。
+> 图片来源：PDF/Word 导入时由 `PdfDocumentParser` / `WordDocumentParser` 提取页面图片，上传 MinIO 后由 VL 视觉模型（Qwen-VL，`VisionModelHolder` 管理）自动生成图片描述（caption），连同 URL 和语义信息（标题、标签、附近文本、caption、页码）写入 chunk 的 `image_refs` metadata（JSON 数组）。`RagImageSupport` 在检索时解析 `image_refs`，对每张图片做术语重叠匹配，只返回与 query 相关的图片，避免无关图片干扰 LLM 生成。
 >
 > `oj_question` 集合的向量文本包含题目 ID 和链接（如 `/view/question/42`），LLM 可以直接引用真实链接，避免编造。
 
@@ -1250,6 +1250,11 @@ INSERT INTO ai_config (config_key, config_value, description, is_enable) VALUES
 ('ai.rerank.enabled', 'true', '是否启用 Cross-Encoder Rerank 精排', 1),
 ('ai.rerank.model_name', 'gte-rerank', 'Rerank 模型名称（DashScope 提供）', 1),
 ('ai.rerank.top_n', '3', 'Rerank 精排后取前 N 个结果', 1);
+
+-- VL 视觉模型配置（用于导入时生成图片描述）
+INSERT INTO ai_config (config_key, config_value, description, is_enable) VALUES
+('ai.vl.model_name', 'qwen-vl-plus', 'VL视觉语言模型名称（用于图片描述生成）', 1),
+('ai.vl.concurrency', '4', 'VL模型并发调用数', 1);
 ```
 
 ### 4.2 方向 A：Agent 推理链路日志表

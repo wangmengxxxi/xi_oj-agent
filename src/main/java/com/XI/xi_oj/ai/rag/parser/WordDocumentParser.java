@@ -1,5 +1,7 @@
 package com.XI.xi_oj.ai.rag.parser;
 
+import com.XI.xi_oj.ai.rag.RagImageSupport;
+import com.XI.xi_oj.ai.rag.VisionModelHolder;
 import com.XI.xi_oj.common.ErrorCode;
 import com.XI.xi_oj.exception.BusinessException;
 import com.XI.xi_oj.manager.MinioService;
@@ -11,13 +13,23 @@ import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFPictureData;
 import org.springframework.stereotype.Component;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @Component
 @Slf4j
@@ -27,6 +39,7 @@ public class WordDocumentParser implements DocumentParser {
     private static final int MIN_CHUNK_LENGTH = 80;
     private static final int MAX_TITLE_LENGTH = 60;
     private static final int MIN_IMAGE_SIZE = 5000;
+    private static final int VL_IMAGE_DIMENSION = 512;
 
     private static final Pattern TITLE_PATTERN = Pattern.compile(
             "^(" +
@@ -60,9 +73,11 @@ public class WordDocumentParser implements DocumentParser {
     );
 
     private final MinioService minioService;
+    private final VisionModelHolder visionModelHolder;
 
-    public WordDocumentParser(MinioService minioService) {
+    public WordDocumentParser(MinioService minioService, VisionModelHolder visionModelHolder) {
         this.minioService = minioService;
+        this.visionModelHolder = visionModelHolder;
     }
 
     @Override
@@ -77,20 +92,26 @@ public class WordDocumentParser implements DocumentParser {
 
     @Override
     public ParseResult parseWithImages(InputStream inputStream, String filename) {
+        return parseWithImages(inputStream, filename, ImportProgressCallback.noop());
+    }
+
+    @Override
+    public ParseResult parseWithImages(InputStream inputStream, String filename,
+                                        ImportProgressCallback callback) {
         try (XWPFDocument document = new XWPFDocument(inputStream)) {
             List<ChunkResult> chunks = parseDocument(document);
             if (chunks.isEmpty()) {
                 throw new BusinessException(ErrorCode.PARAMS_ERROR,
                         "Word 文档解析后未生成有效知识块");
             }
+            callback.onStep("解析文档", 10);
 
-            List<String> imageUrls = extractAndUploadImages(document, filename);
+            List<ImageWithCaption> images = extractUploadAndCaption(document, filename, callback);
+            callback.onStep("生成图片描述", 70);
 
-            // Word 无法精确按段落关联图片，将所有图片分配给第一个 chunk
-            if (!imageUrls.isEmpty() && !chunks.isEmpty()) {
-                chunks.get(0).setImageUrls(String.join(",", imageUrls));
-            }
+            assignImagesToChunks(chunks, images);
 
+            List<String> imageUrls = images.stream().map(ImageWithCaption::url).toList();
             log.info("[Word Parser] file={}, chunks={}, images={}", filename, chunks.size(), imageUrls.size());
             return new ParseResult(buildMarkdownBlocks(chunks), imageUrls);
         } catch (BusinessException e) {
@@ -102,8 +123,9 @@ public class WordDocumentParser implements DocumentParser {
         }
     }
 
-    private List<String> extractAndUploadImages(XWPFDocument document, String filename) {
-        List<String> urls = new ArrayList<>();
+    private List<ImageWithCaption> extractUploadAndCaption(XWPFDocument document, String filename,
+                                                            ImportProgressCallback callback) {
+        List<ImageWithCaption> result = new ArrayList<>();
         String prefix = "knowledge/" + filename.replaceAll("[^a-zA-Z0-9._-]", "_");
         List<XWPFPictureData> pictures = document.getAllPictures();
 
@@ -111,18 +133,79 @@ public class WordDocumentParser implements DocumentParser {
             XWPFPictureData pic = pictures.get(i);
             byte[] data = pic.getData();
             if (data.length < MIN_IMAGE_SIZE) continue;
-
             try {
                 String ext = pic.suggestFileExtension();
                 String contentType = pic.getPackagePart().getContentType();
                 String objectName = MinioService.generateObjectName(prefix, "_" + i + "." + ext);
                 String url = minioService.uploadImage(data, objectName, contentType);
-                urls.add(url);
+                byte[] vlData = scaleForVL(data, contentType);
+                result.add(new ImageWithCaption(url, "", vlData, contentType));
             } catch (Exception e) {
                 log.warn("[Word Parser] failed to upload image {}", i, e);
             }
         }
-        return urls;
+        callback.onStep("上传图片", 30);
+
+        if (!result.isEmpty() && visionModelHolder.isAvailable()) {
+            int total = result.size();
+            AtomicInteger completed = new AtomicInteger(0);
+            int concurrency = visionModelHolder.getConcurrency();
+            ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+            try {
+                List<CompletableFuture<String>> futures = result.stream()
+                        .map(img -> CompletableFuture.supplyAsync(() -> {
+                            String caption = visionModelHolder.generateCaption(img.data(), img.mimeType());
+                            callback.onImageCaptionProgress(completed.incrementAndGet(), total);
+                            return caption;
+                        }, executor))
+                        .toList();
+                try {
+                    CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+                            .get(10, TimeUnit.MINUTES);
+                } catch (Exception e) {
+                    log.warn("[Word Parser] VL caption timeout/error: {}", e.getMessage());
+                }
+                for (int i = 0; i < result.size(); i++) {
+                    try {
+                        String caption = futures.get(i).getNow("");
+                        if (caption != null && !caption.isBlank()) {
+                            ImageWithCaption old = result.get(i);
+                            result.set(i, new ImageWithCaption(old.url(), caption, null, null));
+                        }
+                    } catch (Exception ignored) {}
+                }
+                log.info("[Word Parser] VL caption generated for {} images", completed.get());
+            } finally {
+                executor.shutdown();
+            }
+        }
+        // 释放图片字节引用
+        for (int i = 0; i < result.size(); i++) {
+            ImageWithCaption img = result.get(i);
+            if (img.data() != null) {
+                result.set(i, new ImageWithCaption(img.url(), img.caption(), null, null));
+            }
+        }
+        return result;
+    }
+
+    private void assignImagesToChunks(List<ChunkResult> chunks, List<ImageWithCaption> images) {
+        if (images.isEmpty() || chunks.isEmpty()) return;
+        for (ImageWithCaption img : images) {
+            ChunkResult best = chunks.get(0);
+            if (img.caption() != null && !img.caption().isBlank()) {
+                for (ChunkResult chunk : chunks) {
+                    String chunkText = chunk.getTitle() + "\n" + chunk.getBody();
+                    if (RagImageSupport.hasMeaningfulOverlap(chunkText, img.caption())) {
+                        best = chunk;
+                        break;
+                    }
+                }
+            }
+            best.getImageUrlList().add(img.url());
+            best.getImageRefList().add(new RagImageSupport.ImageRef(
+                    img.url(), best.getTitle(), best.getTag(), "", img.caption(), null));
+        }
     }
 
     private List<ChunkResult> parseDocument(XWPFDocument document) {
@@ -216,7 +299,8 @@ public class WordDocumentParser implements DocumentParser {
                 title != null ? title : "未分类知识点",
                 tag != null ? tag : "算法基础",
                 body.toString(),
-                null
+                new ArrayList<>(),
+                new ArrayList<>()
         ));
     }
 
@@ -238,8 +322,9 @@ public class WordDocumentParser implements DocumentParser {
             sb.append("content_type: 知识点\n");
             sb.append("tag: ").append(chunk.getTag()).append("\n");
             sb.append("title: ").append(chunk.getTitle()).append("\n");
-            if (chunk.getImageUrls() != null) {
-                sb.append("image_urls: ").append(chunk.getImageUrls()).append("\n");
+            if (!chunk.getImageUrlList().isEmpty()) {
+                sb.append("image_urls: ").append(String.join(",", chunk.getImageUrlList())).append("\n");
+                sb.append("image_refs: ").append(RagImageSupport.buildImageRefsJson(chunk.getImageRefList())).append("\n");
             }
             sb.append("source_type: docx\n");
             sb.append("\n");
@@ -248,12 +333,45 @@ public class WordDocumentParser implements DocumentParser {
         return sb.toString();
     }
 
+    private byte[] scaleForVL(byte[] imageData, String mimeType) {
+        try {
+            BufferedImage original = ImageIO.read(new ByteArrayInputStream(imageData));
+            if (original == null) return imageData;
+            int w = original.getWidth();
+            int h = original.getHeight();
+            if (w <= VL_IMAGE_DIMENSION && h <= VL_IMAGE_DIMENSION) {
+                original.flush();
+                return imageData;
+            }
+            double scale = Math.min((double) VL_IMAGE_DIMENSION / w, (double) VL_IMAGE_DIMENSION / h);
+            int newW = (int) (w * scale);
+            int newH = (int) (h * scale);
+            BufferedImage scaled = new BufferedImage(newW, newH, BufferedImage.TYPE_INT_RGB);
+            java.awt.Graphics2D g = scaled.createGraphics();
+            g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
+                    java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            g.drawImage(original, 0, 0, newW, newH, null);
+            g.dispose();
+            original.flush();
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            String format = mimeType != null && mimeType.contains("jpeg") ? "jpeg" : "png";
+            ImageIO.write(scaled, format, baos);
+            scaled.flush();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return imageData;
+        }
+    }
+
     @Data
     @AllArgsConstructor
     private static class ChunkResult {
         private String title;
         private String tag;
         private String body;
-        private String imageUrls;
+        private List<String> imageUrlList;
+        private List<RagImageSupport.ImageRef> imageRefList;
     }
+
+    private record ImageWithCaption(String url, String caption, byte[] data, String mimeType) {}
 }

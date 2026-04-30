@@ -2,7 +2,6 @@ package com.XI.xi_oj.controller;
 
 import com.XI.xi_oj.ai.rag.KnowledgeInitializer;
 import com.XI.xi_oj.ai.rag.parser.DocumentParser;
-import com.XI.xi_oj.ai.rag.parser.DocumentParser.ParseResult;
 import com.XI.xi_oj.annotation.AuthCheck;
 import com.XI.xi_oj.common.BaseResponse;
 import com.XI.xi_oj.common.ErrorCode;
@@ -26,8 +25,6 @@ import java.util.UUID;
 @RequestMapping("/admin/knowledge")
 @Slf4j
 public class KnowledgeImportController {
-
-    private static final long ASYNC_THRESHOLD = 10 * 1024 * 1024; // 10MB
 
     @Resource
     private KnowledgeInitializer knowledgeInitializer;
@@ -62,25 +59,12 @@ public class KnowledgeImportController {
                 .orElseThrow(() -> new BusinessException(ErrorCode.PARAMS_ERROR,
                         "不支持的文件格式: " + extension + "，仅支持 .md / .pdf / .docx"));
 
-        // 大文件走异步处理
-        if (file.getSize() > ASYNC_THRESHOLD) {
-            String taskId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-            byte[] fileBytes = file.getBytes();
-            importAsyncService.importAsync(taskId, fileBytes, filename, parser);
-            log.info("[Knowledge Import] large file, async taskId={}, file={}, size={}MB",
-                    taskId, filename, file.getSize() / 1024 / 1024);
-            return ResultUtils.success("文件较大，已提交异步导入，任务ID: " + taskId);
-        }
-
-        ParseResult result = parser.parseWithImages(file.getInputStream(), filename);
-        int count = knowledgeInitializer.parseAndStore(result.markdownBlocks());
-        knowledgeInitializer.validateImportedCount(count);
-
-        String imageInfo = result.imageUrls().isEmpty() ? "" :
-                "，提取 " + result.imageUrls().size() + " 张图片";
-        log.info("[Knowledge Import] file={}, format={}, count={}, images={}",
-                filename, extension, count, result.imageUrls().size());
-        return ResultUtils.success("成功导入 " + count + " 条知识条目" + imageInfo);
+        String taskId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        byte[] fileBytes = file.getBytes();
+        importAsyncService.importAsync(taskId, fileBytes, filename, parser);
+        log.info("[Knowledge Import] async taskId={}, file={}, size={}KB",
+                taskId, filename, file.getSize() / 1024);
+        return ResultUtils.success(taskId);
     }
 
     @GetMapping("/import/status/{taskId}")

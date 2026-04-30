@@ -26,6 +26,10 @@ export const importKnowledge = (file: File) => {
 }
 
 export const getImportStatus = (taskId: string) =>
-  request.get<BaseResponse<{ status: string; filename: string; message: string }>>(
-    `/admin/knowledge/import/status/${taskId}`
-  )
+  request.get<BaseResponse<{
+    status: string
+    filename: string
+    message: string
+    progress: number
+    currentStep: string
+  }>>(`/admin/knowledge/import/status/${taskId}`)

@@ -628,15 +628,13 @@ private List<String> extractAndUploadImages(
 
 ### 7.1 修改 KnowledgeImportController
 
-在现有 Controller 基础上扩展，支持 `.md` / `.pdf` / `.docx` 三种格式，并对超过 10MB 的大文件走异步处理：
+在现有 Controller 基础上扩展，支持 `.md` / `.pdf` / `.docx` 三种格式。PDF/DOCX 统一走异步处理（因 VL 图片描述生成耗时较长），Markdown 保持同步：
 
 ```java
 @RestController
 @RequestMapping("/admin/knowledge")
 @Slf4j
 public class KnowledgeImportController {
-
-    private static final long ASYNC_THRESHOLD = 10 * 1024 * 1024; // 10MB
 
     @Resource
     private KnowledgeInitializer knowledgeInitializer;
@@ -656,7 +654,7 @@ public class KnowledgeImportController {
         String filename = file.getOriginalFilename();
         String extension = StringUtils.getFilenameExtension(filename);
 
-        // Markdown 走原有逻辑
+        // Markdown 走原有逻辑（同步）
         if ("md".equalsIgnoreCase(extension) || "markdown".equalsIgnoreCase(extension)) {
             String content = new String(file.getBytes(), StandardCharsets.UTF_8);
             int count = knowledgeInitializer.parseAndStore(content);
@@ -664,29 +662,17 @@ public class KnowledgeImportController {
             return ResultUtils.success("成功导入 " + count + " 条知识条目");
         }
 
-        // PDF / Word 走文档解析器
+        // PDF / Word 统一走异步处理（VL 图片描述生成耗时较长）
         DocumentParser parser = documentParsers.stream()
                 .filter(p -> p.supports(extension))
                 .findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.PARAMS_ERROR,
                         "不支持的文件格式: " + extension + "，仅支持 .md / .pdf / .docx"));
 
-        // 大文件走异步处理
-        if (file.getSize() > ASYNC_THRESHOLD) {
-            String taskId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-            byte[] fileBytes = file.getBytes();
-            importAsyncService.importAsync(taskId, fileBytes, filename, parser);
-            return ResultUtils.success("文件较大，已提交异步导入，任务ID: " + taskId);
-        }
-
-        // 正常大小文件：同步解析（含图片提取）
-        ParseResult result = parser.parseWithImages(file.getInputStream(), filename);
-        int count = knowledgeInitializer.parseAndStore(result.markdownBlocks());
-        knowledgeInitializer.validateImportedCount(count);
-
-        String imageInfo = result.imageUrls().isEmpty() ? "" :
-                "，提取 " + result.imageUrls().size() + " 张图片";
-        return ResultUtils.success("成功导入 " + count + " 条知识条目" + imageInfo);
+        String taskId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        byte[] fileBytes = file.getBytes();
+        importAsyncService.importAsync(taskId, fileBytes, filename, parser);
+        return ResultUtils.success(taskId);
     }
 
     @GetMapping("/import/status/{taskId}")
@@ -705,9 +691,10 @@ public class KnowledgeImportController {
 
 1. 利用 Spring 的 `List<DocumentParser>` 自动注入所有实现类，通过 `supports()` 方法路由到对应解析器。
 2. 新增格式不需要修改 Controller 代码，只需新增一个 `DocumentParser` 实现类（开闭原则）。
-3. Markdown 仍走原有逻辑，保持向后兼容。
-4. 超过 10MB 的大文件走 `KnowledgeImportAsyncService` 异步处理（`@Async` + `Semaphore(2)` 限制并发），返回 taskId 供前端轮询 `/import/status/{taskId}` 查询进度。
-5. PDF/Word 使用 `parseWithImages()` 方法，同时提取文本和图片，图片上传 MinIO 后 URL 写入 chunk metadata。
+3. Markdown 仍走原有逻辑（同步），保持向后兼容。
+4. PDF/DOCX 统一走 `KnowledgeImportAsyncService` 异步处理（`@Async` + `Semaphore(2)` 限制并发），返回 taskId 供前端轮询 `/import/status/{taskId}` 查询进度。不再有 10MB 阈值判断，因为 VL 图片描述生成耗时较长，所有 PDF/DOCX 都需要异步 + 进度条。
+5. PDF/Word 使用 `parseWithImages()` 方法，同时提取文本和图片。图片上传 MinIO 后，由 VL 视觉模型（Qwen-VL）并发生成描述，写入 chunk 的 `image_refs` metadata。
+6. `ImportTaskStatus` 包含 `progress`（0-100）和 `currentStep` 字段，前端通过进度条实时展示导入进度。
 
 ---
 
@@ -728,7 +715,7 @@ content_type: 知识点
 tag: 二分查找
 title: 二分查找基础模板与核心思想
 image_urls: http://minio:9000/oj-knowledge-images/xxx1.png,http://minio:9000/oj-knowledge-images/xxx2.png
-image_refs: [{"url":"http://...xxx1.png","title":"二分查找基础模板与核心思想","tag":"二分查找","nearbyText":"图 10-2 二分查找示意图...","caption":"","page":3}]
+image_refs: [{"url":"http://...xxx1.png","title":"二分查找基础模板与核心思想","tag":"二分查找","nearbyText":"图 10-2 二分查找示意图...","caption":"这张图展示了二分查找在有序数组中逐步缩小搜索范围的过程","page":3}]
 source_type: pdf
 ```
 
@@ -737,12 +724,13 @@ source_type: pdf
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | image_urls | String（可选） | 该知识块关联的图片 URL，多张图片以逗号分隔，存储在 MinIO `oj-knowledge-images` 桶 |
-| image_refs | String（可选） | JSON 数组，每张图片的结构化语义信息（url/title/tag/nearbyText/caption/page），用于检索时精准匹配 |
+| image_refs | String（可选） | JSON 数组，每张图片的结构化语义信息（url/title/tag/nearbyText/caption/page），caption 由 VL 视觉模型自动生成，用于检索时精准匹配 |
 | source_type | String（可选） | 来源格式：md / pdf / docx |
 
 `image_refs` 相比 `image_urls` 的优势：
 - `image_urls` 只有 URL，检索时无法判断图片与用户 query 的相关性，只能在"视觉类 query"时全量返回。
-- `image_refs` 携带每张图片的上下文语义（标题、标签、附近文本、页码），检索时可以按 query 相关性过滤，避免无关图片干扰 LLM。
+- `image_refs` 携带每张图片的上下文语义（标题、标签、附近文本、VL 生成的图片描述、页码），检索时可以按 query 相关性过滤，避免无关图片干扰 LLM。
+- `caption` 字段由 VL 视觉模型（Qwen-VL）在导入时自动生成，描述图片内容（如"展示了快速排序的分区过程"），让 LLM 能理解图片画的是什么。
 
 ### 8.3 KnowledgeInitializer.parseBlock 适配
 
@@ -1023,12 +1011,13 @@ const beforeUpload = (file) => {
 5. ✅ `ImageAwareContentRetriever` 装饰器实现 RAG 检索图片感知
 6. ✅ System Prompt 增加【图片引用规范】
 
-**第三阶段（体验优化）：** 部分完成
+**第三阶段（体验优化）：** 已完成
 
-1. 前端上传组件适配多格式（待前端配合）
-2. 上传结果摘要展示（待前端配合）
-3. ✅ 大文件异步处理（`KnowledgeImportAsyncService`，10MB 阈值，`Semaphore(2)` 限并发）
-4. 导入历史记录（可选，记录每次导入的文件名、条目数、时间）
+1. ✅ 前端上传组件适配多格式
+2. ✅ 上传结果摘要展示
+3. ✅ PDF/DOCX 统一异步处理（`KnowledgeImportAsyncService`，`Semaphore(2)` 限并发），前端进度条实时展示
+4. ✅ VL 视觉模型（Qwen-VL）自动生成图片描述，写入 `image_refs.caption`
+5. 导入历史记录（可选，记录每次导入的文件名、条目数、时间）
 
 ### 12.2 测试验证清单
 
@@ -1049,8 +1038,9 @@ const beforeUpload = (file) => {
 
 1. **工程设计**：策略模式（`DocumentParser` 接口 + 多实现），新增格式零修改 Controller（开闭原则）。接口设计了 `parse()` 和 `parseWithImages()` 两个方法，后者返回 `ParseResult` record 同时携带文本和图片 URL 列表，default 实现保证向后兼容。
 2. **文本切片**：不是简单按固定长度切，而是按语义结构（章节标题）切片，保证每个 chunk 的语义完整性。为什么 chunk 大小控制在 80~600 字符？太短信息量不足导致 embedding 质量低，太长超出 embedding 模型的有效编码窗口。
-3. **图片处理**：PDF 图片提取用 PDFBox 的 `PDResources` API，不是按页渲染截图（那样会丢失分辨率），而是直接提取原始嵌入图片。图片按页码关联到对应 chunk（`assignImagesToChunks`），URL 以逗号分隔存入 `image_urls` metadata。
-4. **RAG 图片感知**：通过 `ImageAwareContentRetriever` 装饰器模式包装 base retriever，检索到含图片的 chunk 时自动追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用到 LLM 上下文，配合 System Prompt 中的【图片引用规范】，实现端到端的图文混合知识检索。
-5. **存储选型**：为什么用 MinIO 而不是直接存数据库 BLOB？图片是二进制大对象，存数据库会拖慢查询性能；MinIO 兼容 S3 协议，生产环境可以无缝切换到阿里云 OSS / AWS S3。
-6. **大文件异步处理**：超过 10MB 的文件走 `@Async` 异步导入，`Semaphore(2)` 限制并发防止 OOM，返回 taskId 供前端轮询状态。
-7. **与现有系统的集成**：解析器只输出 markdown block 格式字符串，完全复用现有的 `parseAndStore()` → embedding → Milvus 链路，改动最小化。
+3. **图片处理**：PDF 图片提取用 PDFBox 的 `PDResources` API，不是按页渲染截图（那样会丢失分辨率），而是直接提取原始嵌入图片。图片缩放到 1600px 上传 MinIO 保证展示质量，同时缩放到 512px 用于 VL 模型描述生成以节省内存和 API 开销。
+4. **VL 视觉模型集成**：导入时用 Qwen-VL 为每张图片生成一句话描述（caption），写入 `image_refs` metadata。VL 描述在两个环节发挥作用：导入时帮助将图片分配到语义最相关的 chunk（`hasMeaningfulOverlap`），检索时让 LLM 理解图片内容从而更准确地决定是否引用。`VisionModelHolder` 管理 VL 模型生命周期，支持热更新，分批并发调用（每批 20 张，并发数可配置）。
+5. **RAG 图片感知**：通过 `ImageAwareContentRetriever` 装饰器模式包装 base retriever，检索到含图片的 chunk 时自动追加 `[RAG_SOURCE_IMAGES]` 段和 markdown 图片引用到 LLM 上下文，配合 System Prompt 中的【图片引用规范】，实现端到端的图文混合知识检索。
+6. **存储选型**：为什么用 MinIO 而不是直接存数据库 BLOB？图片是二进制大对象，存数据库会拖慢查询性能；MinIO 兼容 S3 协议，生产环境可以无缝切换到阿里云 OSS / AWS S3。
+7. **异步处理与进度追踪**：PDF/DOCX 统一走 `@Async` 异步导入，`Semaphore(2)` 限制并发防止 OOM，返回 taskId 供前端轮询状态。`ImportTaskStatus` 包含 `progress`（0-100）和 `currentStep` 字段，前端通过进度条实时展示（解析文档 → 上传图片 → 生成图片描述 → 写入向量库）。
+8. **与现有系统的集成**：解析器只输出 markdown block 格式字符串，完全复用现有的 `parseAndStore()` → embedding → Milvus 链路，改动最小化。

@@ -21,6 +21,8 @@ const rebuilding = ref(false)
 const importing = ref(false)
 const importResult = ref('')
 const importTaskId = ref('')
+const importProgress = ref(0)
+const importStep = ref('')
 const selectedFile = ref<File | null>(null)
 const selectedFileName = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -119,6 +121,8 @@ const form = reactive({
   'ai.prompt.code_analysis': '',
   'ai.prompt.wrong_analysis': '',
   'ai.prompt.question_parse': '',
+  'ai.vl.model_name': '',
+  'ai.vl.concurrency': '' as string | number,
 })
 
 type FormKey = keyof typeof form
@@ -192,6 +196,7 @@ async function loadConfig() {
     if (form['ai.rerank.top_n']) form['ai.rerank.top_n'] = Number(form['ai.rerank.top_n'])
     if (form['ai.agent.max_steps']) form['ai.agent.max_steps'] = Number(form['ai.agent.max_steps'])
     if (form['ai.agent.tool_max_retry']) form['ai.agent.tool_max_retry'] = Number(form['ai.agent.tool_max_retry'])
+    if (form['ai.vl.concurrency']) form['ai.vl.concurrency'] = Number(form['ai.vl.concurrency'])
     if (data['ai.provider']) selectedProvider.value = data['ai.provider']
     if (data['ai.model.name']) providerModelName.value = data['ai.model.name']
     if (data['ai.model.base_url']) providerBaseUrl.value = data['ai.model.base_url']
@@ -263,15 +268,16 @@ async function handleStartImport() {
   importing.value = true
   importResult.value = ''
   importTaskId.value = ''
+  importProgress.value = 0
+  importStep.value = ''
   try {
     const res = await importKnowledge(selectedFile.value)
     const msg = res.data.data ?? '导入完成'
-    // 检查是否为异步任务
-    const taskIdMatch = msg.match(/任务ID:\s*(\w+)/)
-    if (taskIdMatch) {
-      importTaskId.value = taskIdMatch[1]
-      importResult.value = '大文件已提交异步导入，正在处理中...'
-      startPolling(taskIdMatch[1])
+    const ext = selectedFileName.value.split('.').pop()?.toLowerCase()
+    if (ext === 'pdf' || ext === 'docx') {
+      importTaskId.value = msg
+      importResult.value = '已提交导入任务，正在处理中...'
+      startPolling(msg)
     } else {
       importResult.value = msg
       Message.success(msg)
@@ -293,8 +299,11 @@ function startPolling(taskId: string) {
       const res = await getImportStatus(taskId)
       const status = res.data.data
       if (!status) return
+      importProgress.value = status.progress ?? 0
+      importStep.value = status.currentStep ?? ''
       if (status.status === 'completed') {
         importResult.value = status.message || '导入完成'
+        importProgress.value = 100
         Message.success(importResult.value)
         stopPolling()
         importing.value = false
@@ -302,16 +311,19 @@ function startPolling(taskId: string) {
         selectedFileName.value = ''
       } else if (status.status === 'failed') {
         importResult.value = status.message || '导入失败'
+        importProgress.value = 0
         Message.error(importResult.value)
         stopPolling()
         importing.value = false
       } else {
-        importResult.value = '正在处理中（' + status.status + '）...'
+        importResult.value = status.currentStep
+          ? `${status.currentStep}...`
+          : '正在处理中...'
       }
     } catch {
       // 轮询失败不中断
     }
-  }, 3000)
+  }, 2000)
 }
 
 function stopPolling() {
@@ -545,6 +557,39 @@ onUnmounted(() => {
 
         <!-- Agent 配置 -->
         <div class="config-section">
+          <div class="section-title">VL 视觉模型配置</div>
+          <div class="field-hint" style="margin-bottom: 12px">
+            导入 PDF/Word 时，使用视觉语言模型自动为图片生成描述，提升图片检索相关性。使用聊天模型的 API 密钥和端点。
+          </div>
+          <div class="rag-row">
+            <a-form-item label="VL 模型名称">
+              <a-select
+                v-model="form['ai.vl.model_name']"
+                allow-create
+                allow-search
+                placeholder="选择或输入 VL 模型名称"
+                style="width: 100%"
+              >
+                <a-option value="qwen-vl-plus">qwen-vl-plus</a-option>
+                <a-option value="qwen-vl-max">qwen-vl-max</a-option>
+                <a-option value="qwen2.5-vl-72b-instruct">qwen2.5-vl-72b-instruct</a-option>
+              </a-select>
+              <div class="field-hint">推荐 qwen-vl-plus，性价比最高；qwen-vl-max 效果更好但更贵</div>
+            </a-form-item>
+            <a-form-item label="并发调用线程数">
+              <a-input-number
+                v-model="form['ai.vl.concurrency']"
+                :min="1"
+                :max="16"
+                style="width: 100%"
+              />
+              <div class="field-hint">图片描述生成的并发数，建议 2-8，过高可能触发 API 限流</div>
+            </a-form-item>
+          </div>
+        </div>
+
+        <!-- Agent 推理配置 -->
+        <div class="config-section">
           <div class="section-title">Agent 推理配置</div>
           <a-form-item label="推理模式">
             <a-select v-model="form['ai.agent.mode']" style="width: 100%">
@@ -632,7 +677,11 @@ onUnmounted(() => {
             {{ importing ? '导入中...' : '开始导入' }}
           </a-button>
         </div>
-        <div v-if="importResult" class="import-result">{{ importResult }}</div>
+        <div v-if="importing && importTaskId" class="import-progress">
+          <a-progress :percent="importProgress / 100" :stroke-width="8" />
+          <span class="progress-step">{{ importStep }}</span>
+        </div>
+        <div v-if="importResult && !importing" class="import-result">{{ importResult }}</div>
       </div>
     </div>
 
@@ -840,5 +889,18 @@ onUnmounted(() => {
   font-size: 13px;
   color: #00b42a;
   font-weight: 500;
+}
+
+.import-progress {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.progress-step {
+  font-size: 12px;
+  color: #8c8c8c;
 }
 </style>
