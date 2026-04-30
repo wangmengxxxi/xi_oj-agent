@@ -1,6 +1,8 @@
 package com.XI.xi_oj.ai.rag;
 
 import com.XI.xi_oj.ai.agent.AiModelHolder;
+import com.XI.xi_oj.ai.observability.AiObservationModule;
+import com.XI.xi_oj.ai.observability.AiObservationRecorder;
 import com.XI.xi_oj.utils.TimeUtil;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
@@ -40,6 +42,9 @@ public class OJKnowledgeRetriever {
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    @Resource
+    private AiObservationRecorder aiObservationRecorder;
+
     private static final String RAG_CACHE_PREFIX = "ai:rag:cache:";
     private static final long RAG_CACHE_TTL_MINUTES = 60;
 
@@ -49,9 +54,11 @@ public class OJKnowledgeRetriever {
         String cached = stringRedisTemplate.opsForValue().get(cacheKey);
         if (cached != null) {
             log.debug("[RAG Cache] HIT key={}", cacheKey);
+            recordIfEmpty(query, cached);
             return cached;
         }
         String result = doRetrieve(query, topK, minScore);
+        recordIfEmpty(query, result);
         stringRedisTemplate.opsForValue().set(cacheKey, result, TimeUtil.minutes(RAG_CACHE_TTL_MINUTES));
         return result;
     }
@@ -77,9 +84,13 @@ public class OJKnowledgeRetriever {
                     .map(m -> Content.from(m.embedded()))
                     .forEach(results::add);
 
+            if (results.isEmpty()) {
+                aiObservationRecorder.recordRagEmpty(AiObservationModule.RAG, query);
+            }
             return results;
         } catch (Exception e) {
             log.warn("[RAG] 知识库检索失败: {}", e.getMessage());
+            aiObservationRecorder.recordRagEmpty(AiObservationModule.RAG, query);
             return Collections.emptyList();
         }
     }
@@ -177,6 +188,7 @@ public class OJKnowledgeRetriever {
         String cached = stringRedisTemplate.opsForValue().get(cacheKey);
         if (cached != null) {
             log.debug("[RAG Cache] HIT key={}", cacheKey);
+            recordIfEmpty(query, cached);
             return cached;
         }
 
@@ -193,6 +205,7 @@ public class OJKnowledgeRetriever {
                 .map(segment -> formatSegmentWithImages(segment, query))
                 .collect(Collectors.joining("\n\n"));
         result = result.isBlank() ? "无相关知识点" : result;
+        recordIfEmpty(query, result);
 
         stringRedisTemplate.opsForValue().set(cacheKey, result, TimeUtil.minutes(RAG_CACHE_TTL_MINUTES));
         return result;
@@ -227,5 +240,13 @@ public class OJKnowledgeRetriever {
             return null;
         }
         return difficulty.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private void recordIfEmpty(String query, String result) {
+        if (result == null || result.isBlank()
+                || result.contains("无相关知识点")
+                || result.contains("鏃犵浉鍏崇煡璇嗙偣")) {
+            aiObservationRecorder.recordRagEmpty(AiObservationModule.RAG, query);
+        }
     }
 }

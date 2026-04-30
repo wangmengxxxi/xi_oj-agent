@@ -80,6 +80,13 @@ const navItems = [
             >
               AI 配置
             </router-link>
+            <router-link
+              to="/admin/ai-observability"
+              class="nav-link"
+              active-class="nav-link-active"
+            >
+              AI Metrics
+            </router-link>
           </template>
         </nav>
 

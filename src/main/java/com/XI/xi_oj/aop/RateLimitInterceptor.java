@@ -2,6 +2,7 @@ package com.XI.xi_oj.aop;
 
 import cn.hutool.extra.servlet.JakartaServletUtil;
 import com.XI.xi_oj.annotation.RateLimit;
+import com.XI.xi_oj.ai.observability.AiObservationRecorder;
 import com.XI.xi_oj.common.ErrorCode;
 import com.XI.xi_oj.exception.BusinessException;
 import com.XI.xi_oj.model.entity.RateLimitRule;
@@ -35,6 +36,8 @@ public class RateLimitInterceptor {
     private RateLimitRuleService rateLimitRuleService;
     @Resource
     private UserService userService;
+    @Resource
+    private AiObservationRecorder aiObservationRecorder;
     private static final DateTimeFormatter DAY_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
     @Around("@annotation(rateLimit)")
     public Object doInterceptor(ProceedingJoinPoint joinPoint, RateLimit rateLimit) throws Throwable {
@@ -128,6 +131,7 @@ public class RateLimitInterceptor {
                         rule.getWindow_seconds(), rule.getLimit_count());
                 if (!allowed) {
                     log.warn("[RateLimit] AI IP限流触发，ip={}", clientIp);
+                    recordAiRateLimited(type, userId, clientIp);
                     throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS,
                             buildMessage(customMessage, "AI接口请求过于频繁，请稍后再试"));
                 }
@@ -138,6 +142,7 @@ public class RateLimitInterceptor {
                         rule.getWindow_seconds(), rule.getLimit_count());
                 if (!allowed) {
                     log.info("[RateLimit] AI用户分钟级限流触发，userId={}", userId);
+                    recordAiRateLimited(type, userId, clientIp);
                     throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS,
                             buildMessage(customMessage,
                                     "AI调用太频繁，每分钟最多调用 " + rule.getLimit_count() + " 次，请稍后再试"));
@@ -149,6 +154,7 @@ public class RateLimitInterceptor {
                 allowed = rateLimitRedisUtil.dailyCountAllow(redisKey, rule.getLimit_count());
                 if (!allowed) {
                     log.info("[RateLimit] AI问答每日限流触发，userId={}", userId);
+                    recordAiRateLimited(type, userId, clientIp);
                     throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS,
                             buildMessage(customMessage,
                                     "今日AI问答次数已达上限（" + rule.getLimit_count() + " 次），明日再来吧"));
@@ -160,6 +166,7 @@ public class RateLimitInterceptor {
                 allowed = rateLimitRedisUtil.dailyCountAllow(redisKey, rule.getLimit_count());
                 if (!allowed) {
                     log.info("[RateLimit] AI代码分析每日限流触发，userId={}", userId);
+                    recordAiRateLimited(type, userId, clientIp);
                     throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS,
                             buildMessage(customMessage,
                                     "今日AI代码分析次数已达上限（" + rule.getLimit_count() + " 次），明日再来吧"));
@@ -171,6 +178,7 @@ public class RateLimitInterceptor {
                 allowed = rateLimitRedisUtil.dailyCountAllow(redisKey, rule.getLimit_count());
                 if (!allowed) {
                     log.info("[RateLimit] AI题目解析每日限流触发，userId={}", userId);
+                    recordAiRateLimited(type, userId, clientIp);
                     throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS,
                             buildMessage(customMessage,
                                     "今日AI题目解析次数已达上限（" + rule.getLimit_count() + " 次），明日再来吧"));
@@ -182,6 +190,7 @@ public class RateLimitInterceptor {
                 allowed = rateLimitRedisUtil.dailyCountAllow(redisKey, rule.getLimit_count());
                 if (!allowed) {
                     log.info("[RateLimit] AI错题分析每日限流触发，userId={}", userId);
+                    recordAiRateLimited(type, userId, clientIp);
                     throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS,
                             buildMessage(customMessage,
                                     "今日AI错题分析次数已达上限（" + rule.getLimit_count() + " 次），明日再来吧"));
@@ -193,6 +202,7 @@ public class RateLimitInterceptor {
                         rule.getLimit_count(), rule.getWindow_seconds());
                 if (!allowed) {
                     log.warn("[RateLimit] AI全局令牌桶限流触发，clientIp={}", clientIp);
+                    recordAiRateLimited(type, userId, clientIp);
                     throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS,
                             buildMessage(customMessage, "AI系统繁忙，请稍后再试"));
                 }
@@ -227,5 +237,9 @@ public class RateLimitInterceptor {
     }
     private String buildMessage(String customMessage, String defaultMessage) {
         return (customMessage != null && !customMessage.isBlank()) ? customMessage : defaultMessage;
+    }
+
+    private void recordAiRateLimited(RateLimitTypeEnum type, Long userId, String clientIp) {
+        aiObservationRecorder.recordRateLimited(type.getRuleKey(), userId, "ip=" + clientIp);
     }
 }

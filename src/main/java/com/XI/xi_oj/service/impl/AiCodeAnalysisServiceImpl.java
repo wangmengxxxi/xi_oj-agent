@@ -2,6 +2,8 @@ package com.XI.xi_oj.service.impl;
 
 import cn.hutool.json.JSONUtil;
 import com.XI.xi_oj.ai.agent.AiModelHolder;
+import com.XI.xi_oj.ai.observability.AiObservationModule;
+import com.XI.xi_oj.ai.observability.AiObservationRecorder;
 import com.XI.xi_oj.ai.rag.OJKnowledgeRetriever;
 import com.XI.xi_oj.common.ErrorCode;
 import com.XI.xi_oj.exception.BusinessException;
@@ -64,29 +66,56 @@ public class AiCodeAnalysisServiceImpl implements AiCodeAnalysisService {
     @Resource
     private AiCodeAnalysisMapper aiCodeAnalysisMapper;
 
+    @Resource
+    private AiObservationRecorder aiObservationRecorder;
+
     @Override
     public String analyzeCode(Long userId, AiCodeAnalysisRequest request) {
-        CodeAnalysisContext context = buildContext(userId, request);
-        String prompt = buildPrompt(context);
-        String analysis = aiModelHolder.getChatModel().chat(prompt);
-        saveAnalysis(context, analysis);
-        return analysis;
+        long start = System.currentTimeMillis();
+        try {
+            CodeAnalysisContext context = buildContext(userId, request);
+            String prompt = buildPrompt(context);
+            String analysis = aiModelHolder.getChatModel().chat(prompt);
+            saveAnalysis(context, analysis);
+            aiObservationRecorder.recordCall(AiObservationModule.CODE_ANALYSIS, userId, null,
+                    System.currentTimeMillis() - start, true);
+            return analysis;
+        } catch (Exception e) {
+            aiObservationRecorder.recordCall(AiObservationModule.CODE_ANALYSIS, userId, null,
+                    System.currentTimeMillis() - start, false);
+            throw e;
+        }
     }
 
     @Override
     public Flux<String> analyzeCodeStream(Long userId, Long questionId, Long questionSubmitId) {
+        long start = System.currentTimeMillis();
         AiCodeAnalysisRequest request = new AiCodeAnalysisRequest();
-        request.setQuestionId(questionId);
-        request.setQuestionSubmitId(questionSubmitId);
-        CodeAnalysisContext context = buildContext(userId, request);
-        String prompt = buildPrompt(context);
+        try {
+            request.setQuestionId(questionId);
+            request.setQuestionSubmitId(questionSubmitId);
+            CodeAnalysisContext context = buildContext(userId, request);
+            String prompt = buildPrompt(context);
 
-        StringBuilder buffer = new StringBuilder();
-        return aiModelHolder.getOjStreamingService().stream(prompt)
-                .doOnNext(token -> buffer.append(token == null ? "" : token))
-                .doOnComplete(() -> saveAnalysis(context, buffer.toString()))
-                .doOnError(e -> log.error("[AI Code] stream analyze failed, userId={}, questionId={}, submitId={}",
-                        userId, questionId, questionSubmitId, e));
+            StringBuilder buffer = new StringBuilder();
+            return aiModelHolder.getOjStreamingService().stream(prompt)
+                    .doOnNext(token -> buffer.append(token == null ? "" : token))
+                    .doOnComplete(() -> {
+                        saveAnalysis(context, buffer.toString());
+                        aiObservationRecorder.recordCall(AiObservationModule.CODE_ANALYSIS, userId, null,
+                                System.currentTimeMillis() - start, true);
+                    })
+                    .doOnError(e -> {
+                        aiObservationRecorder.recordCall(AiObservationModule.CODE_ANALYSIS, userId, null,
+                                System.currentTimeMillis() - start, false);
+                        log.error("[AI Code] stream analyze failed, userId={}, questionId={}, submitId={}",
+                                userId, questionId, questionSubmitId, e);
+                    });
+        } catch (Exception e) {
+            aiObservationRecorder.recordCall(AiObservationModule.CODE_ANALYSIS, userId, null,
+                    System.currentTimeMillis() - start, false);
+            throw e;
+        }
     }
 
     @Override

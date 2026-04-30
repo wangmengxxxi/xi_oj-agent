@@ -2,6 +2,8 @@ package com.XI.xi_oj.service.impl;
 
 import cn.hutool.json.JSONUtil;
 import com.XI.xi_oj.ai.agent.AiModelHolder;
+import com.XI.xi_oj.ai.observability.AiObservationModule;
+import com.XI.xi_oj.ai.observability.AiObservationRecorder;
 import com.XI.xi_oj.ai.rag.OJKnowledgeRetriever;
 import com.XI.xi_oj.common.ErrorCode;
 import com.XI.xi_oj.exception.BusinessException;
@@ -64,6 +66,9 @@ public class AiWrongQuestionServiceImpl implements AiWrongQuestionService {
     @Resource
     private AiModelHolder aiModelHolder;
 
+    @Resource
+    private AiObservationRecorder aiObservationRecorder;
+
     @Override
     public List<WrongQuestionVO> listMyWrongQuestions(Long userId) {
         List<AiWrongQuestion> rows = aiWrongQuestionMapper.selectListByUser(userId);
@@ -84,39 +89,63 @@ public class AiWrongQuestionServiceImpl implements AiWrongQuestionService {
 
     @Override
     public String analyzeWrongQuestion(Long userId, Long wrongQuestionId) {
-        AiWrongQuestion wrong = requireOwnedWrongQuestion(userId, wrongQuestionId);
-        WrongQuestionContext context = buildContext(userId, wrong);
-        List<Long> similarQuestionIds = findSimilarQuestionIds(context);
-        String ragContext = ojKnowledgeRetriever.retrieveByType(
-                buildRagQuery(context),
-                "错题分析",
-                3,
-                0.7
-        );
-        String prompt = buildPrompt(context, ragContext, formatSimilarQuestions(similarQuestionIds));
-        String answer = aiModelHolder.getChatModel().chat(prompt);
-        persistAnalysis(wrong, answer, similarQuestionIds);
-        return answer;
+        long start = System.currentTimeMillis();
+        try {
+            AiWrongQuestion wrong = requireOwnedWrongQuestion(userId, wrongQuestionId);
+            WrongQuestionContext context = buildContext(userId, wrong);
+            List<Long> similarQuestionIds = findSimilarQuestionIds(context);
+            String ragContext = ojKnowledgeRetriever.retrieveByType(
+                    buildRagQuery(context),
+                    "错题分析",
+                    3,
+                    0.7
+            );
+            String prompt = buildPrompt(context, ragContext, formatSimilarQuestions(similarQuestionIds));
+            String answer = aiModelHolder.getChatModel().chat(prompt);
+            persistAnalysis(wrong, answer, similarQuestionIds);
+            aiObservationRecorder.recordCall(AiObservationModule.WRONG_QUESTION, userId, null,
+                    System.currentTimeMillis() - start, true);
+            return answer;
+        } catch (Exception e) {
+            aiObservationRecorder.recordCall(AiObservationModule.WRONG_QUESTION, userId, null,
+                    System.currentTimeMillis() - start, false);
+            throw e;
+        }
     }
 
     @Override
     public Flux<String> analyzeWrongQuestionStream(Long userId, Long wrongQuestionId) {
-        AiWrongQuestion wrong = requireOwnedWrongQuestion(userId, wrongQuestionId);
-        WrongQuestionContext context = buildContext(userId, wrong);
-        List<Long> similarQuestionIds = findSimilarQuestionIds(context);
-        String ragContext = ojKnowledgeRetriever.retrieveByType(
-                buildRagQuery(context),
-                "错题分析",
-                3,
-                0.7
-        );
-        String prompt = buildPrompt(context, ragContext, formatSimilarQuestions(similarQuestionIds));
+        long start = System.currentTimeMillis();
+        try {
+            AiWrongQuestion wrong = requireOwnedWrongQuestion(userId, wrongQuestionId);
+            WrongQuestionContext context = buildContext(userId, wrong);
+            List<Long> similarQuestionIds = findSimilarQuestionIds(context);
+            String ragContext = ojKnowledgeRetriever.retrieveByType(
+                    buildRagQuery(context),
+                    "错题分析",
+                    3,
+                    0.7
+            );
+            String prompt = buildPrompt(context, ragContext, formatSimilarQuestions(similarQuestionIds));
 
-        StringBuilder buffer = new StringBuilder();
-        return aiModelHolder.getOjStreamingService().stream(prompt)
-                .doOnNext(buffer::append)
-                .doOnComplete(() -> persistAnalysis(wrong, buffer.toString(), similarQuestionIds))
-                .doOnError(e -> log.error("[AI Wrong] stream analyze failed, wrongQuestionId={}", wrongQuestionId, e));
+            StringBuilder buffer = new StringBuilder();
+            return aiModelHolder.getOjStreamingService().stream(prompt)
+                    .doOnNext(buffer::append)
+                    .doOnComplete(() -> {
+                        persistAnalysis(wrong, buffer.toString(), similarQuestionIds);
+                        aiObservationRecorder.recordCall(AiObservationModule.WRONG_QUESTION, userId, null,
+                                System.currentTimeMillis() - start, true);
+                    })
+                    .doOnError(e -> {
+                        aiObservationRecorder.recordCall(AiObservationModule.WRONG_QUESTION, userId, null,
+                                System.currentTimeMillis() - start, false);
+                        log.error("[AI Wrong] stream analyze failed, wrongQuestionId={}", wrongQuestionId, e);
+                    });
+        } catch (Exception e) {
+            aiObservationRecorder.recordCall(AiObservationModule.WRONG_QUESTION, userId, null,
+                    System.currentTimeMillis() - start, false);
+            throw e;
+        }
     }
 
     @Override

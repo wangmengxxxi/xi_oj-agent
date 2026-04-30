@@ -2,6 +2,8 @@ package com.XI.xi_oj.service.impl;
 
 import cn.hutool.json.JSONUtil;
 import com.XI.xi_oj.ai.agent.AiModelHolder;
+import com.XI.xi_oj.ai.observability.AiObservationModule;
+import com.XI.xi_oj.ai.observability.AiObservationRecorder;
 import com.XI.xi_oj.ai.rag.OJKnowledgeRetriever;
 import com.XI.xi_oj.common.ErrorCode;
 import com.XI.xi_oj.exception.BusinessException;
@@ -30,29 +32,54 @@ public class AiQuestionParseServiceImpl implements AiQuestionParseService {
     @Resource
     private QuestionService questionService;
 
+    @Resource
+    private AiObservationRecorder aiObservationRecorder;
+
     @Override
     public AiQuestionParseResponse parseQuestion(Long userId, Long questionId) {
-        Question question = requireQuestion(questionId);
-        String context = buildQuestionContext(question);
-        String analysis = aiModelHolder.getOjQuestionParseAgent().parse(context);
-        List<Long> similarQuestionIds = getSimilarQuestionIds(question);
-        log.info("[AI Question Parse] parsed questionId={}, userId={}, similarCount={}",
-                questionId, userId, similarQuestionIds.size());
-        return AiQuestionParseResponse.builder()
-                .questionId(questionId)
-                .analysis(analysis)
-                .similarQuestionIds(similarQuestionIds)
-                .build();
+        long start = System.currentTimeMillis();
+        try {
+            Question question = requireQuestion(questionId);
+            String context = buildQuestionContext(question);
+            String analysis = aiModelHolder.getOjQuestionParseAgent().parse(context);
+            List<Long> similarQuestionIds = getSimilarQuestionIds(question);
+            log.info("[AI Question Parse] parsed questionId={}, userId={}, similarCount={}",
+                    questionId, userId, similarQuestionIds.size());
+            aiObservationRecorder.recordCall(AiObservationModule.QUESTION_PARSE, userId, null,
+                    System.currentTimeMillis() - start, true);
+            return AiQuestionParseResponse.builder()
+                    .questionId(questionId)
+                    .analysis(analysis)
+                    .similarQuestionIds(similarQuestionIds)
+                    .build();
+        } catch (Exception e) {
+            aiObservationRecorder.recordCall(AiObservationModule.QUESTION_PARSE, userId, null,
+                    System.currentTimeMillis() - start, false);
+            throw e;
+        }
     }
 
     @Override
     public Flux<String> parseQuestionStream(Long userId, Long questionId) {
-        Question question = requireQuestion(questionId);
-        String context = buildQuestionContext(question);
-        log.info("[AI Question Parse] stream parse start, questionId={}, userId={}", questionId, userId);
-        return aiModelHolder.getOjQuestionParseAgent().parseStream(context)
-                .doOnError(e -> log.error("[AI Question Parse] stream parse failed, questionId={}, userId={}",
-                        questionId, userId, e));
+        long start = System.currentTimeMillis();
+        try {
+            Question question = requireQuestion(questionId);
+            String context = buildQuestionContext(question);
+            log.info("[AI Question Parse] stream parse start, questionId={}, userId={}", questionId, userId);
+            return aiModelHolder.getOjQuestionParseAgent().parseStream(context)
+                    .doOnComplete(() -> aiObservationRecorder.recordCall(AiObservationModule.QUESTION_PARSE, userId, null,
+                            System.currentTimeMillis() - start, true))
+                    .doOnError(e -> {
+                        aiObservationRecorder.recordCall(AiObservationModule.QUESTION_PARSE, userId, null,
+                                System.currentTimeMillis() - start, false);
+                        log.error("[AI Question Parse] stream parse failed, questionId={}, userId={}",
+                                questionId, userId, e);
+                    });
+        } catch (Exception e) {
+            aiObservationRecorder.recordCall(AiObservationModule.QUESTION_PARSE, userId, null,
+                    System.currentTimeMillis() - start, false);
+            throw e;
+        }
     }
 
     @Override

@@ -6,14 +6,20 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("ai_agent_trace_log")
-public class AgentTraceLog {
+@TableName("ai_observation_event")
+public class AiObservationEvent implements Serializable {
 
     @TableId(type = IdType.AUTO)
     private Long id;
+
+    @TableField("event_type")
+    private String eventType;
+
+    private String module;
 
     @TableField("user_id")
     private Long userId;
@@ -21,31 +27,25 @@ public class AgentTraceLog {
     @TableField("chat_id")
     private String chatId;
 
-    private String query;
+    @TableField("request_id")
+    private String requestId;
 
-    @TableField("step_index")
-    private Integer stepIndex;
+    @TableField("target_key")
+    private String targetKey;
 
-    private String thought;
-
-    @TableField("tool_name")
-    private String toolName;
-
-    @TableField("tool_input")
-    private String toolInput;
-
-    @TableField("tool_output")
-    private String toolOutput;
-
-    @TableField("tool_success")
-    private Integer toolSuccess;
-
-    @TableField("retry_count")
-    private Integer retryCount;
+    private Integer success;
 
     @TableField("duration_ms")
     private Long durationMs;
 
+    @TableField("count_value")
+    private Integer countValue;
+
+    private String detail;
+
     @TableField("create_time")
     private LocalDateTime createTime;
+
+    @TableField(exist = false)
+    private static final long serialVersionUID = 1L;
 }

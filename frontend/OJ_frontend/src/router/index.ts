@@ -77,6 +77,12 @@ const router = createRouter({
           meta: { requiresRole: 'admin' },
         },
         {
+          path: 'admin/ai-observability',
+          name: 'adminAiObservability',
+          component: () => import('@/views/admin/AiObservabilityView.vue'),
+          meta: { requiresRole: 'admin' },
+        },
+        {
           path: 'ai/chat',
           name: 'aiChat',
           component: () => import('@/views/ai/AiChatView.vue'),

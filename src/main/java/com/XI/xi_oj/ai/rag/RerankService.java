@@ -3,6 +3,7 @@ package com.XI.xi_oj.ai.rag;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import com.XI.xi_oj.ai.observability.AiObservationRecorder;
 import com.XI.xi_oj.service.AiConfigService;
 import com.XI.xi_oj.utils.AiEncryptUtil;
 import dev.langchain4j.rag.content.Content;
@@ -36,6 +37,9 @@ public class RerankService {
     @Resource
     private AiConfigService aiConfigService;
 
+    @Resource
+    private AiObservationRecorder aiObservationRecorder;
+
     @Value("${ai.encrypt.key}")
     private String encryptKey;
 
@@ -58,6 +62,7 @@ public class RerankService {
             return limit(contents, topN);
         }
 
+        aiObservationRecorder.recordRerankCall(query, contents.size());
         try {
             log.info("[Rerank] start, candidates={}, topN={}, query={}", contents.size(), topN, abbreviate(query, 120));
             List<String> documents = contents.stream()
@@ -85,6 +90,7 @@ public class RerankService {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 log.warn("[Rerank] request failed, status={}, body={}", response.statusCode(), response.body());
+                aiObservationRecorder.recordRerankFailed(query, "http status " + response.statusCode());
                 return limit(contents, topN);
             }
 
@@ -93,6 +99,7 @@ public class RerankService {
             return reranked;
         } catch (Exception e) {
             log.warn("[Rerank] failed, fallback to vector order: {}", e.getMessage());
+            aiObservationRecorder.recordRerankFailed(query, e.getMessage());
             return limit(contents, topN);
         }
     }

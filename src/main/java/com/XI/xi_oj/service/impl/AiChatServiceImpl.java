@@ -8,6 +8,8 @@ import com.XI.xi_oj.ai.filter.LinkValidationFilter;
 import com.XI.xi_oj.ai.model.AiChatHistoryPageRequest;
 import com.XI.xi_oj.ai.model.AiChatHistoryPageResponse;
 import com.XI.xi_oj.ai.model.AiChatRecord;
+import com.XI.xi_oj.ai.observability.AiObservationModule;
+import com.XI.xi_oj.ai.observability.AiObservationRecorder;
 import com.XI.xi_oj.ai.store.AiChatRecordMapper;
 import com.XI.xi_oj.ai.tools.OJTools;
 import com.XI.xi_oj.service.AiChatService;
@@ -61,6 +63,9 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
     @Resource
     private AgentTraceService agentTraceService;
 
+    @Resource
+    private AiObservationRecorder aiObservationRecorder;
+
     @Override
     public String chat(String chatId, Long userId, String message) {
         return chat(chatId, userId, message, null);
@@ -68,6 +73,7 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
 
     @Override
     public String chat(String chatId, Long userId, String message, Long questionId) {
+        long start = System.currentTimeMillis();
         String memoryId = buildMemoryId(userId, chatId);
         String enrichedMessage = buildContextualMessage(questionId, userId, message);
         OJTools.setCurrentUserId(userId);
@@ -82,7 +88,13 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
             }
             answer = linkValidationFilter.validate(answer);
             saveRecord(userId, chatId, message, answer);
+            aiObservationRecorder.recordCall(AiObservationModule.CHAT, userId, chatId,
+                    System.currentTimeMillis() - start, true);
             return answer;
+        } catch (Exception e) {
+            aiObservationRecorder.recordCall(AiObservationModule.CHAT, userId, chatId,
+                    System.currentTimeMillis() - start, false);
+            throw e;
         } finally {
             OJTools.clearCurrentUserId();
         }
@@ -95,6 +107,7 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
 
     @Override
     public Flux<String> chatStream(String chatId, Long userId, String message, Long questionId) {
+        long start = System.currentTimeMillis();
         StringBuilder buffer = new StringBuilder();
         String memoryId = buildMemoryId(userId, chatId);
         String enrichedMessage = buildContextualMessage(questionId, userId, message);
@@ -115,7 +128,13 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
                         OJTools.clearCurrentUserId();
                     }
                 });
-            }).doOnError(e -> log.error("[AI Chat] advanced stream error, chatId={}", chatId, e));
+            }).doOnComplete(() -> aiObservationRecorder.recordCall(AiObservationModule.CHAT, userId, chatId,
+                            System.currentTimeMillis() - start, true))
+                    .doOnError(e -> {
+                        aiObservationRecorder.recordCall(AiObservationModule.CHAT, userId, chatId,
+                                System.currentTimeMillis() - start, false);
+                        log.error("[AI Chat] advanced stream error, chatId={}", chatId, e);
+                    });
         }
 
         log.info("[AI Chat] simple AiServices stream enabled, userId={}, chatId={}", userId, chatId);
@@ -123,8 +142,16 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
         Flux<String> rawStream = aiModelHolder.getOjChatAgent().chatStream(memoryId, enrichedMessage);
         return linkValidationFilter.apply(rawStream)
                 .doOnNext(buffer::append)
-                .doOnComplete(() -> aiChatAsyncService.saveRecordAsync(userId, chatId, message, buffer.toString()))
-                .doOnError(e -> log.error("[AI Chat] stream failed, chatId={}", chatId, e))
+                .doOnComplete(() -> {
+                    aiChatAsyncService.saveRecordAsync(userId, chatId, message, buffer.toString());
+                    aiObservationRecorder.recordCall(AiObservationModule.CHAT, userId, chatId,
+                            System.currentTimeMillis() - start, true);
+                })
+                .doOnError(e -> {
+                    aiObservationRecorder.recordCall(AiObservationModule.CHAT, userId, chatId,
+                            System.currentTimeMillis() - start, false);
+                    log.error("[AI Chat] stream failed, chatId={}", chatId, e);
+                })
                 .doFinally(signal -> OJTools.clearCurrentUserId());
     }
 

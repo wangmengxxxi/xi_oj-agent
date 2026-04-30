@@ -1,5 +1,6 @@
 package com.XI.xi_oj.ai.filter;
 
+import com.XI.xi_oj.ai.observability.AiObservationRecorder;
 import com.XI.xi_oj.service.QuestionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +21,8 @@ public class LinkValidationFilter {
             "\\[([^\\]]*)]\\(/view/question/(\\d+)\\)");
 
     private final QuestionService questionService;
+
+    private final AiObservationRecorder aiObservationRecorder;
 
     public Flux<String> apply(Flux<String> upstream) {
         Map<Long, Boolean> idCache = new HashMap<>();
@@ -97,6 +100,7 @@ public class LinkValidationFilter {
                     result.append(matcher.group());
                 } else {
                     log.warn("[LinkFilter] removed fake link: questionId={}, label={}", idStr, label);
+                    aiObservationRecorder.recordLinkRemoved(questionId, label);
                     result.append(label);
                 }
             } catch (NumberFormatException e) {
