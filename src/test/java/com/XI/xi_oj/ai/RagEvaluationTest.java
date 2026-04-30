@@ -29,6 +29,8 @@ import java.util.*;
  *
  * 指标：
  * - Keyword Hit Rate：检索结果中命中期望关键词的比例
+ * - Title Hit Rate：检索结果标题命中期望标题词的比例
+ * - Answer Point Hit Rate：检索结果正文覆盖期望答案要点的比例
  * - Recall@K：检索结果中命中期望文档的比例（需填写 expectedDocIds）
  * - MRR：首个命中文档的排名倒数（需填写 expectedDocIds）
  * - Avg Result Count：平均返回结果数
@@ -116,6 +118,9 @@ public class RagEvaluationTest {
             List<String> resultTexts = merged.stream()
                     .map(c -> c.textSegment() != null ? c.textSegment().text() : "")
                     .toList();
+            List<String> resultTitles = merged.stream()
+                    .map(this::extractTitle)
+                    .toList();
 
             List<Long> retrievedDocIds = merged.stream()
                     .map(this::extractDocId)
@@ -123,14 +128,18 @@ public class RagEvaluationTest {
                     .toList();
 
             double keywordHitRate = calcKeywordHitRate(resultTexts, evalCase.expectedKeywords);
+            double titleHitRate = calcTitleHitRate(resultTitles, evalCase.expectedTitles);
+            double answerPointHitRate = calcAnswerPointHitRate(resultTexts, evalCase.expectedAnswerPoints);
             double recall = calcRecall(retrievedDocIds, evalCase.expectedDocIds, TOP_K);
             double mrr = calcMrr(retrievedDocIds, evalCase.expectedDocIds);
 
-            results.add(new CaseResult(query, actualQuery, resultTexts, retrievedDocIds,
-                    keywordHitRate, recall, mrr, merged.size()));
+            results.add(new CaseResult(query, actualQuery, resultTexts, resultTitles, retrievedDocIds,
+                    keywordHitRate, titleHitRate, answerPointHitRate, recall, mrr, merged.size()));
         }
 
         double avgKeywordHit = results.stream().mapToDouble(r -> r.keywordHitRate).average().orElse(0);
+        double avgTitleHit = results.stream().mapToDouble(r -> r.titleHitRate).average().orElse(0);
+        double avgAnswerPointHit = results.stream().mapToDouble(r -> r.answerPointHitRate).average().orElse(0);
         double avgResultCount = results.stream().mapToDouble(r -> r.resultCount).average().orElse(0);
         double rewriteRate = cases.isEmpty() ? 0 : (double) rewriteCount / cases.size();
 
@@ -138,14 +147,15 @@ public class RagEvaluationTest {
         double avgRecall = hasDocIds ? results.stream().mapToDouble(r -> r.recall).average().orElse(0) : -1;
         double avgMrr = hasDocIds ? results.stream().mapToDouble(r -> r.mrr).average().orElse(0) : -1;
 
-        System.out.printf("[%s] 完成评估: avgKeywordHit=%.2f, avgResults=%.1f, rewriteRate=%.0f%%",
-                label, avgKeywordHit, avgResultCount, rewriteRate * 100);
+        System.out.printf("[%s] 完成评估: avgKeywordHit=%.2f, avgTitleHit=%.2f, avgAnswerPointHit=%.2f, avgResults=%.1f, rewriteRate=%.0f%%",
+                label, avgKeywordHit, avgTitleHit, avgAnswerPointHit, avgResultCount, rewriteRate * 100);
         if (hasDocIds) {
             System.out.printf(", Recall@%d=%.2f, MRR=%.2f", TOP_K, avgRecall, avgMrr);
         }
         System.out.println();
 
-        return new EvalResult(label, results, avgKeywordHit, avgResultCount, rewriteRate, avgRecall, avgMrr);
+        return new EvalResult(label, results, avgKeywordHit, avgTitleHit, avgAnswerPointHit,
+                avgResultCount, rewriteRate, avgRecall, avgMrr);
     }
 
     private EvalResult runHybridEvaluation(List<EvalCase> cases, String label) {
@@ -194,6 +204,9 @@ public class RagEvaluationTest {
             List<String> resultTexts = deduped.stream()
                     .map(c -> c.textSegment() != null ? c.textSegment().text() : "")
                     .toList();
+            List<String> resultTitles = deduped.stream()
+                    .map(this::extractTitle)
+                    .toList();
 
             List<Long> retrievedDocIds = deduped.stream()
                     .map(this::extractDocId)
@@ -201,14 +214,18 @@ public class RagEvaluationTest {
                     .toList();
 
             double keywordHitRate = calcKeywordHitRate(resultTexts, evalCase.expectedKeywords);
+            double titleHitRate = calcTitleHitRate(resultTitles, evalCase.expectedTitles);
+            double answerPointHitRate = calcAnswerPointHitRate(resultTexts, evalCase.expectedAnswerPoints);
             double recall = calcRecall(retrievedDocIds, evalCase.expectedDocIds, TOP_K);
             double mrr = calcMrr(retrievedDocIds, evalCase.expectedDocIds);
 
-            results.add(new CaseResult(originalQuery, rewrittenQuery, resultTexts, retrievedDocIds,
-                    keywordHitRate, recall, mrr, deduped.size()));
+            results.add(new CaseResult(originalQuery, rewrittenQuery, resultTexts, resultTitles, retrievedDocIds,
+                    keywordHitRate, titleHitRate, answerPointHitRate, recall, mrr, deduped.size()));
         }
 
         double avgKeywordHit = results.stream().mapToDouble(r -> r.keywordHitRate).average().orElse(0);
+        double avgTitleHit = results.stream().mapToDouble(r -> r.titleHitRate).average().orElse(0);
+        double avgAnswerPointHit = results.stream().mapToDouble(r -> r.answerPointHitRate).average().orElse(0);
         double avgResultCount = results.stream().mapToDouble(r -> r.resultCount).average().orElse(0);
         double rewriteRate = cases.isEmpty() ? 0 : (double) results.stream()
                 .filter(r -> !r.actualQuery.equals(r.query)).count() / cases.size();
@@ -217,14 +234,15 @@ public class RagEvaluationTest {
         double avgRecall = hasDocIds ? results.stream().mapToDouble(r -> r.recall).average().orElse(0) : -1;
         double avgMrr = hasDocIds ? results.stream().mapToDouble(r -> r.mrr).average().orElse(0) : -1;
 
-        System.out.printf("[%s] 完成评估: avgKeywordHit=%.2f, avgResults=%.1f, rewriteRate=%.0f%%",
-                label, avgKeywordHit, avgResultCount, rewriteRate * 100);
+        System.out.printf("[%s] 完成评估: avgKeywordHit=%.2f, avgTitleHit=%.2f, avgAnswerPointHit=%.2f, avgResults=%.1f, rewriteRate=%.0f%%",
+                label, avgKeywordHit, avgTitleHit, avgAnswerPointHit, avgResultCount, rewriteRate * 100);
         if (hasDocIds) {
             System.out.printf(", Recall@%d=%.2f, MRR=%.2f", TOP_K, avgRecall, avgMrr);
         }
         System.out.println();
 
-        return new EvalResult(label, results, avgKeywordHit, avgResultCount, rewriteRate, avgRecall, avgMrr);
+        return new EvalResult(label, results, avgKeywordHit, avgTitleHit, avgAnswerPointHit,
+                avgResultCount, rewriteRate, avgRecall, avgMrr);
     }
 
     private List<Content> searchStore(MilvusEmbeddingStore store, EmbeddingModel em, String query, int topK) {
@@ -254,6 +272,44 @@ public class RagEvaluationTest {
                 .filter(kw -> combined.contains(kw.toLowerCase()))
                 .count();
         return (double) hits / expectedKeywords.size();
+    }
+
+    private double calcTitleHitRate(List<String> resultTitles, List<String> expectedTitles) {
+        if (expectedTitles == null || expectedTitles.isEmpty()) {
+            return 0;
+        }
+        String combined = String.join(" ", resultTitles).toLowerCase();
+        long hits = expectedTitles.stream()
+                .filter(title -> combined.contains(title.toLowerCase()))
+                .count();
+        return (double) hits / expectedTitles.size();
+    }
+
+    private double calcAnswerPointHitRate(List<String> results, List<String> expectedAnswerPoints) {
+        if (expectedAnswerPoints == null || expectedAnswerPoints.isEmpty()) {
+            return 0;
+        }
+        String combined = String.join(" ", results).toLowerCase();
+        long hits = expectedAnswerPoints.stream()
+                .filter(point -> combined.contains(point.toLowerCase()))
+                .count();
+        return (double) hits / expectedAnswerPoints.size();
+    }
+
+    private String extractTitle(Content content) {
+        if (content == null || content.textSegment() == null) {
+            return "";
+        }
+        var metadata = content.textSegment().metadata();
+        if (metadata == null) {
+            return "";
+        }
+        String title = metadata.getString("title");
+        if (title != null && !title.isBlank()) {
+            return title;
+        }
+        String questionTitle = metadata.getString("question_title");
+        return questionTitle != null ? questionTitle : "";
     }
 
     private Long extractDocId(Content content) {
@@ -304,6 +360,10 @@ public class RagEvaluationTest {
         System.out.println("╠══════════════════════════════╬══════════════╬══════════════╬══════════════╬══════════════╣");
         System.out.printf( "║ Keyword Hit Rate             ║    %.2f       ║    %.2f       ║    %.2f       ║    %.2f       ║%n",
                 baseline.avgKeywordHit, withRewrite.avgKeywordHit, withAll.avgKeywordHit, hybrid.avgKeywordHit);
+        System.out.printf( "║ Title Hit Rate               ║    %.2f       ║    %.2f       ║    %.2f       ║    %.2f       ║%n",
+                baseline.avgTitleHit, withRewrite.avgTitleHit, withAll.avgTitleHit, hybrid.avgTitleHit);
+        System.out.printf( "║ Answer Point Hit Rate        ║    %.2f       ║    %.2f       ║    %.2f       ║    %.2f       ║%n",
+                baseline.avgAnswerPointHit, withRewrite.avgAnswerPointHit, withAll.avgAnswerPointHit, hybrid.avgAnswerPointHit);
         System.out.printf( "║ Avg Result Count             ║    %.1f        ║    %.1f        ║    %.1f        ║    %.1f        ║%n",
                 baseline.avgResultCount, withRewrite.avgResultCount, withAll.avgResultCount, hybrid.avgResultCount);
         System.out.printf( "║ Rewrite Rate                 ║    %.0f%%        ║    %.0f%%       ║    %.0f%%       ║    %.0f%%       ║%n",
@@ -334,8 +394,14 @@ public class RagEvaluationTest {
                 System.out.printf("  改写: %s -> %s%n", ec.query, wr.actualQuery);
             }
             System.out.printf("  期望关键词: %s%n", ec.expectedKeywords);
+            System.out.printf("  期望标题词: %s%n", ec.expectedTitles);
+            System.out.printf("  期望答案点: %s%n", ec.expectedAnswerPoints);
             System.out.printf("  Keyword Hit: 基线=%.2f  +Rewrite=%.2f  +All=%.2f  +Hybrid=%.2f%n",
                     br.keywordHitRate, wr.keywordHitRate, ar.keywordHitRate, hr.keywordHitRate);
+            System.out.printf("  Title Hit:   基线=%.2f  +Rewrite=%.2f  +All=%.2f  +Hybrid=%.2f%n",
+                    br.titleHitRate, wr.titleHitRate, ar.titleHitRate, hr.titleHitRate);
+            System.out.printf("  Answer Hit:  基线=%.2f  +Rewrite=%.2f  +All=%.2f  +Hybrid=%.2f%n",
+                    br.answerPointHitRate, wr.answerPointHitRate, ar.answerPointHitRate, hr.answerPointHitRate);
             System.out.printf("  结果数:      基线=%d     +Rewrite=%d     +All=%d     +Hybrid=%d%n",
                     br.resultCount, wr.resultCount, ar.resultCount, hr.resultCount);
             if (ec.expectedDocIds != null && !ec.expectedDocIds.isEmpty()) {
@@ -346,6 +412,7 @@ public class RagEvaluationTest {
             }
 
             if (!hr.resultTexts.isEmpty()) {
+                System.out.println("  TopK 标题 (Hybrid): " + hr.resultTitles);
                 System.out.println("  Top1 结果片段 (Hybrid): " + truncate(hr.resultTexts.get(0), 100));
             }
         }
@@ -368,38 +435,57 @@ public class RagEvaluationTest {
             JSONObject obj = (JSONObject) item;
             cases.add(new EvalCase(
                     obj.getStr("query"),
-                    obj.getJSONArray("expectedKeywords").toList(String.class),
-                    obj.getJSONArray("expectedDocIds").toList(Long.class),
+                    readStringList(obj, "expectedKeywords"),
+                    readStringList(obj, "expectedTitles"),
+                    readStringList(obj, "expectedAnswerPoints"),
+                    readLongList(obj, "expectedDocIds"),
                     obj.getStr("category", "")
             ));
         }
         return cases;
     }
 
-    record EvalCase(String query, List<String> expectedKeywords, List<Long> expectedDocIds, String category) {}
+    private List<String> readStringList(JSONObject obj, String key) {
+        JSONArray array = obj.getJSONArray(key);
+        return array == null ? List.of() : array.toList(String.class);
+    }
 
-    record CaseResult(String query, String actualQuery, List<String> resultTexts,
-                      List<Long> retrievedDocIds, double keywordHitRate,
+    private List<Long> readLongList(JSONObject obj, String key) {
+        JSONArray array = obj.getJSONArray(key);
+        return array == null ? List.of() : array.toList(Long.class);
+    }
+
+    record EvalCase(String query, List<String> expectedKeywords, List<String> expectedTitles,
+                    List<String> expectedAnswerPoints, List<Long> expectedDocIds, String category) {}
+
+    record CaseResult(String query, String actualQuery, List<String> resultTexts, List<String> resultTitles,
+                      List<Long> retrievedDocIds, double keywordHitRate, double titleHitRate,
+                      double answerPointHitRate,
                       double recall, double mrr, int resultCount) {}
 
     static class EvalResult {
         final String label;
         final List<CaseResult> results;
         final double avgKeywordHit;
+        final double avgTitleHit;
+        final double avgAnswerPointHit;
         final double avgResultCount;
         final double rewriteRate;
         final double avgRecall;
         final double avgMrr;
 
         EvalResult(String label, List<CaseResult> results) {
-            this(label, results, 0, 0, 0, -1, -1);
+            this(label, results, 0, 0, 0, 0, 0, -1, -1);
         }
 
-        EvalResult(String label, List<CaseResult> results, double avgKeywordHit,
+        EvalResult(String label, List<CaseResult> results, double avgKeywordHit, double avgTitleHit,
+                   double avgAnswerPointHit,
                    double avgResultCount, double rewriteRate, double avgRecall, double avgMrr) {
             this.label = label;
             this.results = results;
             this.avgKeywordHit = avgKeywordHit;
+            this.avgTitleHit = avgTitleHit;
+            this.avgAnswerPointHit = avgAnswerPointHit;
             this.avgResultCount = avgResultCount;
             this.rewriteRate = rewriteRate;
             this.avgRecall = avgRecall;

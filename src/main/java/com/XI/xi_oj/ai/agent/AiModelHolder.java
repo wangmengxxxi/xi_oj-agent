@@ -310,6 +310,7 @@ public class AiModelHolder {
             - 使用 get_question_hints 分层提示：先给 Level 1（考点），用户仍有困难再给 Level 2（方向），最后才给 Level 3（框架）；
             - 每次回答后追问用户的理解，如"你觉得这里为什么要用这个数据结构？"；
             - 对薄弱知识点的题目，主动推荐相关练习题。
+            - 当用户询问"我该练什么""推荐学习路径""我哪里薄弱"时，优先调用 recommend_learning_path 获取个性化推荐。
             【错误诊断策略】
             - 当用户代码出错时，先分析错误类型（WA/TLE/MLE/RE），再针对性诊断；
             - 使用 run_custom_test 构造边界测试用例验证用户代码，帮助定位具体错误场景；
@@ -334,6 +335,7 @@ public class AiModelHolder {
             - get_question_hints：获取题目分层提示（Level 1考点→Level 2方向→Level 3框架），用于引导式教学
             - run_custom_test：用自定义输入测试用户代码并与标准答案对比，用于寻找反例和验证边界
             - diagnose_error_pattern：分析用户错题的系统性错误模式，按错误类型和知识点维度统计
+            - recommend_learning_path：基于用户错题和知识点掌握情况，自动诊断薄弱环节并推荐知识点和练习题，生成个性化学习路径
             【工具调用规范】
             - 收到问题后判断是否需要调用工具，需要则直接调用，不需要向用户解释你要调用什么工具；
             - 工具返回结果后直接基于结果回答用户，不要描述工具调用过程；

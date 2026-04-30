@@ -2,121 +2,241 @@
   {
     "query": "二分怎么写",
     "expectedKeywords": ["二分查找", "二分搜索", "Binary Search"],
+    "expectedTitles": ["二分查找"],
+    "expectedAnswerPoints": ["有序数组", "mid", "边界条件"],
     "expectedDocIds": [],
     "category": "算法基础"
   },
   {
     "query": "dp入门",
     "expectedKeywords": ["动态规划", "DP", "状态转移"],
+    "expectedTitles": ["动态规划"],
+    "expectedAnswerPoints": ["状态定义", "状态转移", "边界条件"],
     "expectedDocIds": [],
     "category": "算法基础"
   },
   {
     "query": "链表反转怎么做",
     "expectedKeywords": ["链表", "反转", "翻转"],
+    "expectedTitles": ["链表", "反转"],
+    "expectedAnswerPoints": ["指针", "前驱", "当前节点"],
     "expectedDocIds": [],
     "category": "数据结构"
   },
   {
     "query": "bfs和dfs有什么区别",
     "expectedKeywords": ["广度优先", "深度优先", "BFS", "DFS", "搜索"],
+    "expectedTitles": ["广度优先", "深度优先", "搜索"],
+    "expectedAnswerPoints": ["队列", "栈", "遍历顺序"],
     "expectedDocIds": [],
     "category": "算法基础"
   },
   {
     "query": "快排时间复杂度",
     "expectedKeywords": ["快速排序", "时间复杂度", "O(nlogn)"],
+    "expectedTitles": ["快速排序"],
+    "expectedAnswerPoints": ["平均时间复杂度", "最坏时间复杂度", "分治"],
     "expectedDocIds": [],
     "category": "算法基础"
   },
   {
     "query": "两数之和怎么优化",
     "expectedKeywords": ["两数之和", "哈希表", "Two Sum"],
+    "expectedTitles": ["两数之和", "哈希"],
+    "expectedAnswerPoints": ["哈希表", "空间换时间", "时间复杂度"],
     "expectedDocIds": [],
     "category": "经典题目"
   },
   {
     "query": "什么时候用栈",
     "expectedKeywords": ["栈", "Stack", "括号匹配", "单调栈"],
+    "expectedTitles": ["栈"],
+    "expectedAnswerPoints": ["后进先出", "括号匹配", "单调栈"],
     "expectedDocIds": [],
     "category": "数据结构"
   },
   {
     "query": "图的最短路径",
     "expectedKeywords": ["最短路径", "Dijkstra", "BFS", "图"],
+    "expectedTitles": ["最短路径", "Dijkstra"],
+    "expectedAnswerPoints": ["Dijkstra", "Bellman-Ford", "权重"],
     "expectedDocIds": [],
     "category": "图论"
   },
   {
     "query": "递归和迭代哪个好",
     "expectedKeywords": ["递归", "迭代", "栈溢出", "尾递归"],
+    "expectedTitles": ["递归", "迭代"],
+    "expectedAnswerPoints": ["函数调用栈", "空间复杂度", "栈溢出"],
     "expectedDocIds": [],
     "category": "编程基础"
   },
   {
     "query": "怎么判断回文串",
     "expectedKeywords": ["回文", "双指针", "字符串"],
+    "expectedTitles": ["回文", "字符串"],
+    "expectedAnswerPoints": ["双指针", "左右指针", "字符比较"],
     "expectedDocIds": [],
     "category": "字符串"
   },
   {
     "query": "贪心算法什么场景用",
     "expectedKeywords": ["贪心", "局部最优", "全局最优"],
+    "expectedTitles": ["贪心"],
+    "expectedAnswerPoints": ["局部最优", "全局最优", "适用条件"],
     "expectedDocIds": [],
     "category": "算法基础"
   },
   {
     "query": "堆排序怎么实现",
     "expectedKeywords": ["堆排序", "优先队列", "堆"],
+    "expectedTitles": ["堆排序", "堆"],
+    "expectedAnswerPoints": ["建堆", "下沉", "时间复杂度"],
     "expectedDocIds": [],
     "category": "数据结构"
   },
   {
     "query": "滑动窗口模板",
     "expectedKeywords": ["滑动窗口", "双指针", "子串"],
+    "expectedTitles": ["滑动窗口"],
+    "expectedAnswerPoints": ["left", "right", "窗口"],
     "expectedDocIds": [],
     "category": "算法技巧"
   },
   {
     "query": "并查集怎么用",
     "expectedKeywords": ["并查集", "Union-Find", "连通分量"],
+    "expectedTitles": ["并查集"],
+    "expectedAnswerPoints": ["查找", "合并", "路径压缩"],
     "expectedDocIds": [],
     "category": "数据结构"
   },
   {
     "query": "背包问题分几种",
     "expectedKeywords": ["背包", "01背包", "完全背包", "动态规划"],
+    "expectedTitles": ["背包"],
+    "expectedAnswerPoints": ["01背包", "完全背包", "状态转移"],
     "expectedDocIds": [],
     "category": "动态规划"
   },
   {
     "query": "前缀和有什么用",
     "expectedKeywords": ["前缀和", "区间和", "差分"],
+    "expectedTitles": ["前缀和", "差分"],
+    "expectedAnswerPoints": ["区间和", "预处理", "差分"],
     "expectedDocIds": [],
     "category": "算法技巧"
   },
   {
     "query": "树的遍历有几种",
     "expectedKeywords": ["前序", "中序", "后序", "层序", "遍历"],
+    "expectedTitles": ["树", "遍历"],
+    "expectedAnswerPoints": ["前序", "中序", "后序", "层序"],
     "expectedDocIds": [],
     "category": "数据结构"
   },
   {
     "query": "超时了怎么优化",
     "expectedKeywords": ["TLE", "时间复杂度", "优化"],
+    "expectedTitles": ["时间复杂度", "优化"],
+    "expectedAnswerPoints": ["时间复杂度", "剪枝", "数据结构"],
     "expectedDocIds": [],
     "category": "调试技巧"
   },
   {
     "query": "拓扑排序怎么写",
     "expectedKeywords": ["拓扑排序", "DAG", "入度", "BFS"],
+    "expectedTitles": ["拓扑排序"],
+    "expectedAnswerPoints": ["DAG", "入度", "队列"],
     "expectedDocIds": [],
     "category": "图论"
   },
   {
     "query": "字符串匹配算法",
     "expectedKeywords": ["KMP", "字符串匹配", "模式匹配"],
+    "expectedTitles": ["字符串匹配", "KMP"],
+    "expectedAnswerPoints": ["KMP", "模式串", "前缀"],
     "expectedDocIds": [],
     "category": "字符串"
+  },
+  {
+    "query": "动态规化怎么入门",
+    "expectedKeywords": ["动态规划", "DP", "状态转移"],
+    "expectedTitles": ["动态规划"],
+    "expectedAnswerPoints": ["状态定义", "状态转移", "边界条件"],
+    "expectedDocIds": [],
+    "category": "脏query-错别字"
+  },
+  {
+    "query": "dfs bfs啥区别啊",
+    "expectedKeywords": ["广度优先", "深度优先", "BFS", "DFS", "搜索"],
+    "expectedTitles": ["广度优先", "深度优先", "搜索"],
+    "expectedAnswerPoints": ["队列", "栈", "遍历顺序"],
+    "expectedDocIds": [],
+    "category": "脏query-口语缩写"
+  },
+  {
+    "query": "就是那个每次选当前最优的算法叫啥",
+    "expectedKeywords": ["贪心", "局部最优", "全局最优"],
+    "expectedTitles": ["贪心"],
+    "expectedAnswerPoints": ["局部最优", "全局最优", "适用条件"],
+    "expectedDocIds": [],
+    "category": "脏query-口语描述"
+  },
+  {
+    "query": "lianbioa怎么翻转",
+    "expectedKeywords": ["链表", "反转", "翻转"],
+    "expectedTitles": ["链表", "反转"],
+    "expectedAnswerPoints": ["指针", "前驱", "当前节点"],
+    "expectedDocIds": [],
+    "category": "脏query-拼音混入"
+  },
+  {
+    "query": "01beibao和完全beibao区别",
+    "expectedKeywords": ["背包", "01背包", "完全背包", "动态规划"],
+    "expectedTitles": ["背包"],
+    "expectedAnswerPoints": ["01背包", "完全背包", "状态转移"],
+    "expectedDocIds": [],
+    "category": "脏query-拼音混入"
+  },
+  {
+    "query": "erfen查找边界条件老写错",
+    "expectedKeywords": ["二分查找", "二分搜索", "Binary Search"],
+    "expectedTitles": ["二分查找"],
+    "expectedAnswerPoints": ["有序数组", "mid", "边界条件"],
+    "expectedDocIds": [],
+    "category": "脏query-拼音混入"
+  },
+  {
+    "query": "那个On方法的滑动窗口咋写来着",
+    "expectedKeywords": ["滑动窗口", "双指针", "子串"],
+    "expectedTitles": ["滑动窗口"],
+    "expectedAnswerPoints": ["left", "right", "窗口"],
+    "expectedDocIds": [],
+    "category": "脏query-口语描述"
+  },
+  {
+    "query": "dijkstra和bellmanford哪个快",
+    "expectedKeywords": ["最短路径", "Dijkstra", "图"],
+    "expectedTitles": ["最短路径", "Dijkstra", "Bellman"],
+    "expectedAnswerPoints": ["Dijkstra", "Bellman-Ford", "负权边"],
+    "expectedDocIds": [],
+    "category": "脏query-英文术语"
+  },
+  {
+    "query": "qianzhui和差分数组",
+    "expectedKeywords": ["前缀和", "区间和", "差分"],
+    "expectedTitles": ["前缀和", "差分"],
+    "expectedAnswerPoints": ["区间和", "预处理", "差分"],
+    "expectedDocIds": [],
+    "category": "脏query-拼音混入"
+  },
+  {
+    "query": "回朔法和递归有啥关系",
+    "expectedKeywords": ["回溯", "递归", "搜索"],
+    "expectedTitles": ["回溯", "递归"],
+    "expectedAnswerPoints": ["递归", "搜索", "撤销选择"],
+    "expectedDocIds": [],
+    "category": "脏query-错别字"
   }
 ]

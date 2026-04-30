@@ -53,6 +53,7 @@ public class AgentLoopService {
             9. get_question_hints(questionId, hintLevel) - 获取题目分层提示
             10. run_custom_test(questionId, code, language, customInput) - 运行自定义测试
             11. diagnose_error_pattern(userId) - 诊断用户错题模式
+            12. recommend_learning_path(userId) - 诊断薄弱知识点并推荐学习路径（知识点+练习题）
 
             每次回复必须严格使用以下格式之一：
 
@@ -65,6 +66,12 @@ public class AgentLoopService {
             Thought: <你的思考过程>
             Answer: <最终回答>
 
+            【工具选择优先级】
+            - 当用户询问"我该练什么""推荐学习路径""我哪里薄弱""帮我分析弱点"时，直接调用 recommend_learning_path，不要拆分成多个工具调用；
+            - recommend_learning_path 已内置薄弱诊断+知识点检索+练习推荐的完整流程，无需先调 diagnose_error_pattern 或 query_user_mastery；
+            - 仅当用户明确要求查看某道具体错题详情时才用 query_user_wrong_question；
+            - 仅当用户明确要求查看提交历史时才用 query_user_submit_history。
+
             规则：
             - 每次只调用一个工具，等待结果后再决定下一步。
             - 如果工具返回错误，分析原因后可以换工具或换参数。
@@ -72,6 +79,7 @@ public class AgentLoopService {
             - 回答语言为中文，不直接给出完整可运行代码。
             - 如果对话中包含知识库检索资料，优先参考这些资料回答，但不要照搬原文。
             - 知识库资料中的图片引用（![...](url)）应原样保留在回答中。
+            - 工具返回的结构化数据（如学习路径、题目链接）应直接呈现给用户，不要丢弃链接或重新编造内容。
             """;
 
     @Resource
@@ -95,7 +103,15 @@ public class AgentLoopService {
     @Resource
     private LinkValidationFilter linkValidationFilter;
 
+    @Resource
+    private IntentRouter intentRouter;
+
     public AgentResult run(String userQuery, Long userId) {
+        String directTool = intentRouter.tryRoute(userQuery);
+        if (directTool != null) {
+            return executeDirectRoute(directTool, userQuery, userId);
+        }
+
         int maxSteps = maxSteps();
         List<AgentStep> steps = new ArrayList<>();
         List<ChatMessage> messages = new ArrayList<>();
@@ -180,6 +196,12 @@ public class AgentLoopService {
 
     public void runStreaming(String userQuery, Long userId, FluxSink<String> sink,
                              Consumer<AgentResult> onComplete) {
+        String directTool = intentRouter.tryRoute(userQuery);
+        if (directTool != null) {
+            executeDirectRouteStreaming(directTool, userQuery, userId, sink, onComplete);
+            return;
+        }
+
         int maxSteps = maxSteps();
         List<AgentStep> steps = new ArrayList<>();
         List<ChatMessage> messages = new ArrayList<>();
@@ -277,6 +299,105 @@ public class AgentLoopService {
         }
         sink.complete();
         onComplete.accept(AgentResult.of(fullAnswer.toString(), steps));
+    }
+
+    private AgentResult executeDirectRoute(String toolName, String userQuery, Long userId) {
+        long start = System.currentTimeMillis();
+        log.info("[AgentLoop] intent pre-route hit, tool={}, query={}", toolName, abbreviate(userQuery, 200));
+
+        Map<String, Object> params = Map.of("userId", userId);
+        ToolDispatcher.ToolResult toolResult = toolDispatcher.execute(toolName, params);
+
+        String systemPrompt = aiConfigService.getPrompt("ai.prompt.agent_system", DEFAULT_AGENT_SYSTEM_PROMPT);
+        int maxSteps = maxSteps();
+        List<ChatMessage> msgs = List.of(
+                SystemMessage.from(systemPrompt.formatted(maxSteps)),
+                UserMessage.from(userQuery),
+                UserMessage.from("工具 " + toolName + " 的返回结果如下，请基于此结果用 Answer 格式直接回答用户，保留所有链接：\n\n" + toolResult.output())
+        );
+
+        ChatModel chatModel = aiModelHolder.getChatModel();
+        if (chatModel == null) {
+            return AgentResult.of(toolResult.output(), List.of());
+        }
+        ChatResponse response = chatModel.chat(msgs);
+        String llmOutput = response.aiMessage().text();
+        String answer = extractBlock(llmOutput, "Answer:");
+        if (answer == null || answer.isBlank()) {
+            answer = llmOutput;
+        }
+        answer = linkValidationFilter.validate(answer);
+
+        long duration = System.currentTimeMillis() - start;
+        AgentStep step = AgentStep.builder()
+                .stepIndex(1)
+                .thought("意图预路由命中: " + toolName)
+                .toolName(toolName)
+                .toolInput("{\"userId\":" + userId + "}")
+                .toolOutput(toolResult.output())
+                .toolSuccess(toolResult.success())
+                .retryCount(toolResult.retryCount())
+                .durationMs(duration)
+                .build();
+        return AgentResult.of(answer, List.of(step));
+    }
+
+    private void executeDirectRouteStreaming(String toolName, String userQuery, Long userId,
+                                              FluxSink<String> sink, Consumer<AgentResult> onComplete) {
+        long start = System.currentTimeMillis();
+        log.info("[AgentLoop-Stream] intent pre-route hit, tool={}, query={}", toolName, abbreviate(userQuery, 200));
+
+        sink.next("[STATUS]正在为你生成个性化推荐...");
+        Map<String, Object> params = Map.of("userId", userId);
+        ToolDispatcher.ToolResult toolResult = toolDispatcher.execute(toolName, params);
+
+        sink.next("[STATUS]正在整理分析结果...");
+        String systemPrompt = aiConfigService.getPrompt("ai.prompt.agent_system", DEFAULT_AGENT_SYSTEM_PROMPT);
+        int maxSteps = maxSteps();
+        List<ChatMessage> msgs = List.of(
+                SystemMessage.from(systemPrompt.formatted(maxSteps)),
+                UserMessage.from(userQuery),
+                UserMessage.from("工具 " + toolName + " 的返回结果如下，请基于此结果用 Answer 格式直接回答用户，保留所有链接：\n\n" + toolResult.output())
+        );
+
+        StreamingChatModel streamingModel = aiModelHolder.getStreamingChatModel();
+        ChatModel chatModel = aiModelHolder.getChatModel();
+        StringBuilder fullAnswer = new StringBuilder();
+
+        if (streamingModel != null) {
+            String llmOutput = streamStep(streamingModel, chatModel, msgs, sink, fullAnswer);
+            String answer = extractBlock(llmOutput, "Answer:");
+            if (answer == null || answer.isBlank()) {
+                if (fullAnswer.length() == 0) {
+                    fullAnswer.append(llmOutput);
+                }
+            }
+        } else if (chatModel != null) {
+            ChatResponse response = chatModel.chat(msgs);
+            String llmOutput = response.aiMessage().text();
+            String answer = extractBlock(llmOutput, "Answer:");
+            String text = (answer != null && !answer.isBlank()) ? answer : llmOutput;
+            emitChunked(text, sink, fullAnswer);
+        } else {
+            emitChunked(toolResult.output(), sink, fullAnswer);
+        }
+
+        String validated = linkValidationFilter.validate(fullAnswer.toString());
+        long duration = System.currentTimeMillis() - start;
+
+        AgentStep step = AgentStep.builder()
+                .stepIndex(1)
+                .thought("意图预路由命中: " + toolName)
+                .toolName(toolName)
+                .toolInput("{\"userId\":" + userId + "}")
+                .toolOutput(toolResult.output())
+                .toolSuccess(toolResult.success())
+                .retryCount(toolResult.retryCount())
+                .durationMs(duration)
+                .build();
+
+        sink.complete();
+        onComplete.accept(AgentResult.of(validated, List.of(step)));
     }
 
     private String streamStep(StreamingChatModel streamingModel, ChatModel chatModel,

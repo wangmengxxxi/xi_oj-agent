@@ -65,6 +65,7 @@ public class ToolDispatcher {
                     str(params.get("language")),
                     str(params.get("customInput")));
             case "diagnose_error_pattern" -> ojTools.diagnoseErrorPattern(toLong(params.get("userId")));
+            case "recommend_learning_path" -> ojTools.recommendLearningPath(toLong(params.get("userId")));
             default -> throw new IllegalArgumentException("未知工具：" + toolName);
         };
     }

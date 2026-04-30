@@ -19,8 +19,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.text.SimpleDateFormat;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -471,6 +470,85 @@ public class OJTools {
                 "错题分析", 3, 0.7);
         if (ragContext != null && !ragContext.equals("无相关知识点")) {
             sb.append("\n【相关知识库参考】\n").append(ragContext).append("\n");
+        }
+
+        return sb.toString();
+    }
+
+    @Tool(
+            name = "recommend_learning_path",
+            value = "基于用户错题和知识点掌握情况，自动诊断薄弱环节并推荐知识点和练习题，生成个性化学习路径。userId从上下文信息中获取。"
+    )
+    public String recommendLearningPath(
+            @P("用户ID，从上下文信息中获取，Long类型") Long userId
+    ) {
+        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        if (resolvedUserId == null) {
+            return "无法获取当前用户信息，请重新登录。";
+        }
+
+        List<Map<String, Object>> mastery = questionSubmitMapper.selectTagMastery(resolvedUserId);
+        if (mastery == null || mastery.isEmpty()) {
+            return "暂无提交记录，无法生成学习路径。建议先尝试做几道题目，系统才能分析你的薄弱点。";
+        }
+
+        List<Map<String, Object>> weakTags = mastery.stream().limit(3).toList();
+
+        List<WrongQuestionVO> allWrong = aiWrongQuestionService.listMyWrongQuestions(resolvedUserId);
+
+        Set<Long> acQuestionIds = questionSubmitMapper.selectList(
+                new QueryWrapper<QuestionSubmit>()
+                        .eq("userId", resolvedUserId)
+                        .eq("status", 2)
+                        .select("DISTINCT questionId")
+        ).stream().map(QuestionSubmit::getQuestionId).collect(Collectors.toSet());
+
+        StringBuilder sb = new StringBuilder("个性化学习路径（按薄弱程度排序）：\n");
+
+        int rank = 1;
+        for (Map<String, Object> tagRow : weakTags) {
+            String tag = String.valueOf(tagRow.get("tag"));
+            String acRate = String.valueOf(tagRow.get("acRate"));
+            String failCount = String.valueOf(tagRow.get("failCount"));
+
+            sb.append(String.format("\n【%d. %s】AC率: %s%% | 失败: %s次\n", rank++, tag, acRate, failCount));
+
+            String knowledge = ojKnowledgeRetriever.retrieveByType(tag, "知识点", 2, 0.6);
+            if (knowledge != null && !knowledge.equals("无相关知识点")) {
+                String truncated = knowledge.length() > 200 ? knowledge.substring(0, 200) + "..." : knowledge;
+                sb.append("  知识点回顾：\n  ").append(truncated.replace("\n", "\n  ")).append("\n");
+            }
+
+            QueryWrapper<Question> wrapper = new QueryWrapper<>();
+            wrapper.eq("isDelete", false).like("tags", tag);
+            if (!acQuestionIds.isEmpty()) {
+                wrapper.notIn("id", acQuestionIds);
+            }
+            wrapper.orderByAsc("FIELD(difficulty, 'easy', 'medium', 'hard')");
+            Page<Question> page = questionService.page(new Page<>(1, 3), wrapper);
+            List<Question> recommended = page.getRecords();
+            if (recommended != null && !recommended.isEmpty()) {
+                sb.append("  推荐练习：\n");
+                for (Question q : recommended) {
+                    sb.append(String.format("  - [%s](/view/question/%d) | 难度: %s\n",
+                            q.getTitle(), q.getId(), q.getDifficulty()));
+                }
+            }
+
+            List<WrongQuestionVO> tagWrong = allWrong.stream()
+                    .filter(w -> {
+                        Question q = questionService.getById(w.getQuestionId());
+                        return q != null && q.getTags() != null && q.getTags().contains(tag);
+                    })
+                    .limit(3)
+                    .toList();
+            if (!tagWrong.isEmpty()) {
+                sb.append("  需要复习的错题：\n");
+                for (WrongQuestionVO w : tagWrong) {
+                    sb.append(String.format("  - [#%d](/view/question/%d) | 错误: %s\n",
+                            w.getQuestionId(), w.getQuestionId(), w.getWrongJudgeResult()));
+                }
+            }
         }
 
         return sb.toString();
