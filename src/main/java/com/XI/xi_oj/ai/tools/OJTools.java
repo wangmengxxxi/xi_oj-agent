@@ -14,6 +14,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.agent.tool.ToolMemoryId;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
@@ -109,9 +110,10 @@ public class OJTools {
             @P("用户ID，从上下文信息中获取，Long类型") Long userId,
             @P("题目ID，Long类型") Long questionId,
             @P("用户提交的代码内容") String code,
-            @P("代码语言，例如 java / python / cpp") String language
+            @P("代码语言，例如 java / python / cpp") String language,
+            @ToolMemoryId String memoryId
     ) {
-        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        Long resolvedUserId = resolveUserId(userId, memoryId);
         if (resolvedUserId == null) {
             return "无法获取当前用户信息，请重新登录。";
         }
@@ -141,9 +143,10 @@ public class OJTools {
     )
     public String queryUserWrongQuestion(
             @P("用户ID，从上下文信息中获取，Long类型") Long userId,
-            @P("题目ID，Long类型") Long questionId
+            @P("题目ID，Long类型") Long questionId,
+            @ToolMemoryId String memoryId
     ) {
-        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        Long resolvedUserId = resolveUserId(userId, memoryId);
         if (resolvedUserId == null) {
             return "无法获取当前用户信息，请重新登录。";
         }
@@ -234,9 +237,10 @@ public class OJTools {
             value = "列出当前用户的所有错题记录，返回错题列表（题目ID、判题结果、复习次数）。userId从上下文信息中获取。"
     )
     public String listUserWrongQuestions(
-            @P("用户ID，从上下文信息中获取，Long类型") Long userId
+            @P("用户ID，从上下文信息中获取，Long类型") Long userId,
+            @ToolMemoryId String memoryId
     ) {
-        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        Long resolvedUserId = resolveUserId(userId, memoryId);
         if (resolvedUserId == null) {
             return "无法获取当前用户信息，请重新登录。";
         }
@@ -258,9 +262,10 @@ public class OJTools {
     )
     public String queryUserSubmitHistory(
             @P("用户ID，从上下文信息中获取，Long类型") Long userId,
-            @P("题目ID，可为空，为空时查询所有题目的提交记录") Long questionId
+            @P("题目ID，可为空，为空时查询所有题目的提交记录") Long questionId,
+            @ToolMemoryId String memoryId
     ) {
-        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        Long resolvedUserId = resolveUserId(userId, memoryId);
         if (resolvedUserId == null) {
             return "无法获取当前用户信息，请重新登录。";
         }
@@ -297,9 +302,10 @@ public class OJTools {
             value = "分析当前用户各知识点的掌握情况，按标签维度统计AC率和错题数，薄弱知识点排在前面。userId从上下文信息中获取。"
     )
     public String queryUserMastery(
-            @P("用户ID，从上下文信息中获取，Long类型") Long userId
+            @P("用户ID，从上下文信息中获取，Long类型") Long userId,
+            @ToolMemoryId String memoryId
     ) {
-        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        Long resolvedUserId = resolveUserId(userId, memoryId);
         if (resolvedUserId == null) {
             return "无法获取当前用户信息，请重新登录。";
         }
@@ -417,9 +423,10 @@ public class OJTools {
             value = "分析当前用户的错题模式，按错误类型和知识点维度统计，识别系统性薄弱环节。userId从上下文信息中获取。"
     )
     public String diagnoseErrorPattern(
-            @P("用户ID，从上下文信息中获取，Long类型") Long userId
+            @P("用户ID，从上下文信息中获取，Long类型") Long userId,
+            @ToolMemoryId String memoryId
     ) {
-        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        Long resolvedUserId = resolveUserId(userId, memoryId);
         if (resolvedUserId == null) {
             return "无法获取当前用户信息，请重新登录。";
         }
@@ -480,9 +487,10 @@ public class OJTools {
             value = "基于用户错题和知识点掌握情况，自动诊断薄弱环节并推荐知识点和练习题，生成个性化学习路径。userId从上下文信息中获取。"
     )
     public String recommendLearningPath(
-            @P("用户ID，从上下文信息中获取，Long类型") Long userId
+            @P("用户ID，从上下文信息中获取，Long类型") Long userId,
+            @ToolMemoryId String memoryId
     ) {
-        Long resolvedUserId = userId != null ? userId : CURRENT_USER_ID.get();
+        Long resolvedUserId = resolveUserId(userId, memoryId);
         if (resolvedUserId == null) {
             return "无法获取当前用户信息，请重新登录。";
         }
@@ -563,6 +571,30 @@ public class OJTools {
         }
 
         return sb.toString();
+    }
+
+    private Long resolveUserId(Long modelProvidedUserId, String memoryId) {
+        Long memoryUserId = parseUserIdFromMemoryId(memoryId);
+        if (memoryUserId != null) {
+            return memoryUserId;
+        }
+        Long authenticatedUserId = CURRENT_USER_ID.get();
+        return authenticatedUserId != null ? authenticatedUserId : modelProvidedUserId;
+    }
+
+    private Long parseUserIdFromMemoryId(String memoryId) {
+        if (memoryId == null || memoryId.isBlank()) {
+            return null;
+        }
+        int idx = memoryId.indexOf(':');
+        if (idx <= 0) {
+            return null;
+        }
+        try {
+            return Long.parseLong(memoryId.substring(0, idx));
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private boolean isRelevantKnowledge(String tag, String knowledge) {

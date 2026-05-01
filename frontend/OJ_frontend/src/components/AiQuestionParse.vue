@@ -3,6 +3,7 @@ import { ref, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
 import { fetchSSE } from '@/utils/sse'
+import type { ApiId } from '@/types'
 import MdViewer from '@/components/MdViewer.vue'
 
 const props = defineProps<{ questionId: number | string }>()
@@ -11,7 +12,7 @@ const router = useRouter()
 const expanded = ref(false)
 const parseResult = ref('')
 const parsing = ref(false)
-const similarIds = ref<number[]>([])
+const similarIds = ref<ApiId[]>([])
 const loaded = ref(false)
 let sseController: AbortController | null = null
 
@@ -28,7 +29,7 @@ function startParse() {
   loaded.value = true
 
   sseController = fetchSSE('/api/ai/question/parse/stream', {
-    questionId: props.questionId,
+    questionId: String(props.questionId),
   }, {
     onToken(token) {
       parseResult.value += token
@@ -56,7 +57,7 @@ async function loadSimilar() {
   }
 }
 
-function goToQuestion(id: number) {
+function goToQuestion(id: ApiId) {
   router.push(`/view/question/${id}`)
 }
 

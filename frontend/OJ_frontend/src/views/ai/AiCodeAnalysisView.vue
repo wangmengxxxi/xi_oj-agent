@@ -6,7 +6,7 @@ import { getQuestionVOById } from '@/api/question'
 import { getAiCodeHistory, getAiSimilarQuestions } from '@/api/ai'
 import { listQuestionSubmitByPage } from '@/api/questionSubmit'
 import { fetchSSE } from '@/utils/sse'
-import type { QuestionVO, AiCodeAnalysis } from '@/types'
+import type { ApiId, QuestionVO, AiCodeAnalysis } from '@/types'
 import CodeEditor from '@/components/CodeEditor.vue'
 import MdViewer from '@/components/MdViewer.vue'
 
@@ -23,7 +23,7 @@ const historyList = ref<AiCodeAnalysis[]>([])
 const historyLoading = ref(false)
 const selectedCode = ref('')
 const selectedLanguage = ref('')
-const similarIds = ref<number[]>([])
+const similarIds = ref<ApiId[]>([])
 let sseController: AbortController | null = null
 
 async function loadQuestion() {
@@ -129,7 +129,7 @@ async function loadSimilar() {
   }
 }
 
-function goToQuestion(id: number) {
+function goToQuestion(id: ApiId) {
   router.push(`/view/question/${id}`)
 }
 

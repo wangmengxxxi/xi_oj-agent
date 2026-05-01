@@ -17,7 +17,7 @@ export function fetchSSE(
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     signal: controller.signal,
-    body: JSON.stringify(body),
+    body: JSON.stringify(normalizeSseBody(body)),
   })
     .then(async (response) => {
       if (!response.ok || !response.body) {
@@ -70,4 +70,19 @@ export function fetchSSE(
     })
 
   return controller
+}
+
+function normalizeSseBody(body: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(body).map(([key, value]) => {
+      if (isIdKey(key) && (typeof value === 'number' || typeof value === 'bigint')) {
+        return [key, String(value)]
+      }
+      return [key, value]
+    }),
+  )
+}
+
+function isIdKey(key: string) {
+  return key === 'id' || key.endsWith('Id') || key.endsWith('ID')
 }

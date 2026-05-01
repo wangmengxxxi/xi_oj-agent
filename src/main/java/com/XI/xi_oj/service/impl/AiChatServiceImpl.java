@@ -4,6 +4,8 @@ import cn.hutool.core.collection.CollUtil;
 import com.XI.xi_oj.ai.agent.AgentLoopService;
 import com.XI.xi_oj.ai.agent.AgentResult;
 import com.XI.xi_oj.ai.agent.AiModelHolder;
+import com.XI.xi_oj.ai.agent.IntentRouter;
+import com.XI.xi_oj.ai.agent.ToolDispatcher;
 import com.XI.xi_oj.ai.filter.LinkValidationFilter;
 import com.XI.xi_oj.ai.model.AiChatHistoryPageRequest;
 import com.XI.xi_oj.ai.model.AiChatHistoryPageResponse;
@@ -22,6 +24,8 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -61,6 +65,12 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
     private AgentLoopService agentLoopService;
 
     @Resource
+    private IntentRouter intentRouter;
+
+    @Resource
+    private ToolDispatcher toolDispatcher;
+
+    @Resource
     private AgentTraceService agentTraceService;
 
     @Resource
@@ -84,7 +94,12 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
                 answer = result.answer();
                 agentTraceService.saveTraceAsync(userId, chatId, message, result.steps());
             } else {
-                answer = aiModelHolder.getOjChatAgent().chat(memoryId, enrichedMessage);
+                IntentRouter.Route route = intentRouter.route(enrichedMessage);
+                if (route != null) {
+                    answer = executeSimpleDirectRoute(route, enrichedMessage, userId, questionId);
+                } else {
+                    answer = aiModelHolder.getOjChatAgent().chat(memoryId, enrichedMessage);
+                }
             }
             answer = linkValidationFilter.validate(answer);
             saveRecord(userId, chatId, message, answer);
@@ -138,6 +153,28 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
         }
 
         log.info("[AI Chat] simple AiServices stream enabled, userId={}, chatId={}", userId, chatId);
+        IntentRouter.Route route = intentRouter.route(enrichedMessage);
+        if (route != null) {
+            return Flux.defer(() -> {
+                        OJTools.setCurrentUserId(userId);
+                        String answer = executeSimpleDirectRoute(route, enrichedMessage, userId, questionId);
+                        String validated = linkValidationFilter.validate(answer);
+                        buffer.append(validated);
+                        return Flux.fromIterable(chunkText(validated));
+                    })
+                    .doOnComplete(() -> {
+                        aiChatAsyncService.saveRecordAsync(userId, chatId, message, buffer.toString());
+                        aiObservationRecorder.recordCall(AiObservationModule.CHAT, userId, chatId,
+                                System.currentTimeMillis() - start, true);
+                    })
+                    .doOnError(e -> {
+                        aiObservationRecorder.recordCall(AiObservationModule.CHAT, userId, chatId,
+                                System.currentTimeMillis() - start, false);
+                        log.error("[AI Chat] simple direct route stream failed, chatId={}", chatId, e);
+                    })
+                    .doFinally(signal -> OJTools.clearCurrentUserId());
+        }
+
         OJTools.setCurrentUserId(userId);
         Flux<String> rawStream = aiModelHolder.getOjChatAgent().chatStream(memoryId, enrichedMessage);
         return linkValidationFilter.apply(rawStream)
@@ -195,6 +232,39 @@ public class AiChatServiceImpl extends ServiceImpl<AiChatRecordMapper, AiChatRec
     @Override
     public List<Map<String, Object>> listSessions(Long userId) {
         return chatRecordMapper.selectSessionsByUser(userId);
+    }
+
+    private String executeSimpleDirectRoute(IntentRouter.Route route, String userQuery, Long userId, Long questionId) {
+        Map<String, Object> params = buildDirectRouteParams(route, userQuery, userId, questionId);
+        log.info("[AI Chat] simple intent pre-route hit, tool={}, params={}", route.toolName(), params);
+        ToolDispatcher.ToolResult result = toolDispatcher.execute(route.toolName(), params);
+        return result.output();
+    }
+
+    private Map<String, Object> buildDirectRouteParams(IntentRouter.Route route, String userQuery,
+                                                       Long userId, Long fallbackQuestionId) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("userId", userId);
+        if (route.requiresQuestionId()) {
+            Long routedQuestionId = fallbackQuestionId != null ? fallbackQuestionId : intentRouter.extractQuestionId(userQuery);
+            if (routedQuestionId != null) {
+                params.put("questionId", routedQuestionId);
+            }
+        }
+        return params;
+    }
+
+    private List<String> chunkText(String text) {
+        List<String> chunks = new ArrayList<>();
+        if (text == null || text.isEmpty()) {
+            chunks.add("");
+            return chunks;
+        }
+        int chunkSize = 4;
+        for (int i = 0; i < text.length(); i += chunkSize) {
+            chunks.add(text.substring(i, Math.min(i + chunkSize, text.length())));
+        }
+        return chunks;
     }
 
     private String buildContextualMessage(Long questionId, Long userId, String message) {

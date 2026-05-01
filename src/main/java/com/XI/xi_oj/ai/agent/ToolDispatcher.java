@@ -42,20 +42,23 @@ public class ToolDispatcher {
                     toLong(params.get("userId")),
                     toLong(params.get("questionId")),
                     str(params.get("code")),
-                    str(params.get("language")));
+                    str(params.get("language")),
+                    null);
             case "query_user_wrong_question" -> ojTools.queryUserWrongQuestion(
                     toLong(params.get("userId")),
-                    toLong(params.get("questionId")));
+                    toLong(params.get("questionId")),
+                    null);
             case "search_questions" -> ojTools.searchQuestions(
                     str(params.get("keyword")),
                     str(params.get("tag")),
                     str(params.get("difficulty")));
             case "find_similar_questions" -> ojTools.findSimilarQuestions(toLong(params.get("questionId")));
-            case "list_user_wrong_questions" -> ojTools.listUserWrongQuestions(toLong(params.get("userId")));
+            case "list_user_wrong_questions" -> ojTools.listUserWrongQuestions(toLong(params.get("userId")), null);
             case "query_user_submit_history" -> ojTools.queryUserSubmitHistory(
                     toLong(params.get("userId")),
-                    toLong(params.get("questionId")));
-            case "query_user_mastery" -> ojTools.queryUserMastery(toLong(params.get("userId")));
+                    toLong(params.get("questionId")),
+                    null);
+            case "query_user_mastery" -> ojTools.queryUserMastery(toLong(params.get("userId")), null);
             case "get_question_hints" -> ojTools.getQuestionHints(
                     toLong(params.get("questionId")),
                     toInt(params.get("hintLevel"), 1));
@@ -64,8 +67,8 @@ public class ToolDispatcher {
                     str(params.get("code")),
                     str(params.get("language")),
                     str(params.get("customInput")));
-            case "diagnose_error_pattern" -> ojTools.diagnoseErrorPattern(toLong(params.get("userId")));
-            case "recommend_learning_path" -> ojTools.recommendLearningPath(toLong(params.get("userId")));
+            case "diagnose_error_pattern" -> ojTools.diagnoseErrorPattern(toLong(params.get("userId")), null);
+            case "recommend_learning_path" -> ojTools.recommendLearningPath(toLong(params.get("userId")), null);
             default -> throw new IllegalArgumentException("未知工具：" + toolName);
         };
     }

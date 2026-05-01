@@ -109,9 +109,9 @@ public class AgentLoopService {
     private IntentRouter intentRouter;
 
     public AgentResult run(String userQuery, Long userId) {
-        String directTool = intentRouter.tryRoute(userQuery);
-        if (directTool != null) {
-            return executeDirectRoute(directTool, userQuery, userId);
+        IntentRouter.Route route = intentRouter.route(userQuery);
+        if (route != null) {
+            return executeDirectRoute(route, userQuery, userId);
         }
 
         int maxSteps = maxSteps();
@@ -198,9 +198,9 @@ public class AgentLoopService {
 
     public void runStreaming(String userQuery, Long userId, FluxSink<String> sink,
                              Consumer<AgentResult> onComplete) {
-        String directTool = intentRouter.tryRoute(userQuery);
-        if (directTool != null) {
-            executeDirectRouteStreaming(directTool, userQuery, userId, sink, onComplete);
+        IntentRouter.Route route = intentRouter.route(userQuery);
+        if (route != null) {
+            executeDirectRouteStreaming(route, userQuery, userId, sink, onComplete);
             return;
         }
 
@@ -303,11 +303,12 @@ public class AgentLoopService {
         onComplete.accept(AgentResult.of(fullAnswer.toString(), steps));
     }
 
-    private AgentResult executeDirectRoute(String toolName, String userQuery, Long userId) {
+    private AgentResult executeDirectRoute(IntentRouter.Route route, String userQuery, Long userId) {
         long start = System.currentTimeMillis();
+        String toolName = route.toolName();
         log.info("[AgentLoop] intent pre-route hit, tool={}, query={}", toolName, abbreviate(userQuery, 200));
 
-        Map<String, Object> params = Map.of("userId", userId);
+        Map<String, Object> params = buildDirectRouteParams(route, userQuery, userId, null);
         ToolDispatcher.ToolResult toolResult = toolDispatcher.execute(toolName, params);
 
         String systemPrompt = aiConfigService.getPrompt("ai.prompt.agent_system", DEFAULT_AGENT_SYSTEM_PROMPT);
@@ -335,7 +336,7 @@ public class AgentLoopService {
                 .stepIndex(1)
                 .thought("意图预路由命中: " + toolName)
                 .toolName(toolName)
-                .toolInput("{\"userId\":" + userId + "}")
+                .toolInput(JSONUtil.toJsonStr(params))
                 .toolOutput(toolResult.output())
                 .toolSuccess(toolResult.success())
                 .retryCount(toolResult.retryCount())
@@ -344,13 +345,14 @@ public class AgentLoopService {
         return AgentResult.of(answer, List.of(step));
     }
 
-    private void executeDirectRouteStreaming(String toolName, String userQuery, Long userId,
+    private void executeDirectRouteStreaming(IntentRouter.Route route, String userQuery, Long userId,
                                               FluxSink<String> sink, Consumer<AgentResult> onComplete) {
         long start = System.currentTimeMillis();
+        String toolName = route.toolName();
         log.info("[AgentLoop-Stream] intent pre-route hit, tool={}, query={}", toolName, abbreviate(userQuery, 200));
 
         sink.next("[STATUS]正在为你生成个性化推荐...");
-        Map<String, Object> params = Map.of("userId", userId);
+        Map<String, Object> params = buildDirectRouteParams(route, userQuery, userId, null);
         ToolDispatcher.ToolResult toolResult = toolDispatcher.execute(toolName, params);
 
         sink.next("[STATUS]正在整理分析结果...");
@@ -391,7 +393,7 @@ public class AgentLoopService {
                 .stepIndex(1)
                 .thought("意图预路由命中: " + toolName)
                 .toolName(toolName)
-                .toolInput("{\"userId\":" + userId + "}")
+                .toolInput(JSONUtil.toJsonStr(params))
                 .toolOutput(toolResult.output())
                 .toolSuccess(toolResult.success())
                 .retryCount(toolResult.retryCount())
@@ -522,6 +524,19 @@ public class AgentLoopService {
             }
         }
         return text.substring(start, end).trim();
+    }
+
+    private Map<String, Object> buildDirectRouteParams(IntentRouter.Route route, String userQuery,
+                                                       Long userId, Long fallbackQuestionId) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("userId", userId);
+        if (route.requiresQuestionId()) {
+            Long questionId = fallbackQuestionId != null ? fallbackQuestionId : intentRouter.extractQuestionId(userQuery);
+            if (questionId != null) {
+                params.put("questionId", questionId);
+            }
+        }
+        return params;
     }
 
     private Map<String, Object> parseToolParams(String actionInput, Long userId) {

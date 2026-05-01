@@ -5,7 +5,7 @@ import { Message, Modal } from '@arco-design/web-vue'
 import { getDueWrongQuestionList, getWrongQuestionList, reviewWrongQuestion } from '@/api/ai'
 import { getQuestionVOById } from '@/api/question'
 import { fetchSSE } from '@/utils/sse'
-import type { WrongQuestionVO } from '@/types'
+import type { ApiId, WrongQuestionVO } from '@/types'
 import MdViewer from '@/components/MdViewer.vue'
 
 const router = useRouter()
@@ -84,7 +84,7 @@ function startAnalysis(item: WrongQuestionVO) {
   analyzing.value = true
 
   sseController = fetchSSE('/api/ai/wrong-question/analysis/stream', {
-    wrongQuestionId: item.id,
+    wrongQuestionId: String(item.id),
   }, {
     onToken(token) {
       analysisContent.value += token
@@ -103,7 +103,7 @@ function startAnalysis(item: WrongQuestionVO) {
 
 async function handleReview(item: WrongQuestionVO) {
   try {
-    await reviewWrongQuestion({ wrongQuestionId: item.id })
+    await reviewWrongQuestion({ wrongQuestionId: String(item.id) })
     markReviewedLocal(item.id)
     Message.success('已标记复习')
   } catch (err: any) {
@@ -111,11 +111,11 @@ async function handleReview(item: WrongQuestionVO) {
   }
 }
 
-function goToQuestion(questionId: number | string) {
+function goToQuestion(questionId: ApiId) {
   router.push(`/view/question/${questionId}`)
 }
 
-function markReviewedLocal(wrongQuestionId: number) {
+function markReviewedLocal(wrongQuestionId: ApiId) {
   const targets = [
     wrongList.value.find((w) => w.id === wrongQuestionId),
     dueList.value.find((w) => w.id === wrongQuestionId),

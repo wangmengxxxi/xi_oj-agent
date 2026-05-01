@@ -12,6 +12,8 @@ export interface Page<T> {
   size: number
 }
 
+export type ApiId = string | number
+
 // ===== 用户 =====
 export interface LoginUserVO {
   id: number
@@ -187,7 +189,7 @@ export interface QuestionSubmitQueryRequest {
 export interface AiChatRequest {
   chatId: string
   message: string
-  questionId?: number | string
+  questionId?: ApiId
 }
 
 export interface AiChatClearRequest {
@@ -195,8 +197,8 @@ export interface AiChatClearRequest {
 }
 
 export interface AiChatRecord {
-  id: number
-  userId: number
+  id: ApiId
+  userId: ApiId
   question: string
   answer: string
   chatId: string
@@ -207,20 +209,20 @@ export interface AiChatRecord {
 export interface AiChatHistoryPageRequest {
   chatId: string
   cursorTime?: string
-  cursorId?: number
+  cursorId?: ApiId
   pageSize?: number
 }
 
 export interface AiChatHistoryPageResponse {
   records: AiChatRecord[]
   nextCursorTime?: string
-  nextCursorId?: number
+  nextCursorId?: ApiId
 }
 
 // ===== AI 代码分析 =====
 export interface AiCodeAnalysisRequest {
-  questionId: number
-  questionSubmitId?: number
+  questionId: ApiId
+  questionSubmitId?: ApiId
   code?: string
   language?: string
   judgeStatus?: string
@@ -228,9 +230,9 @@ export interface AiCodeAnalysisRequest {
 }
 
 export interface AiCodeAnalysis {
-  id: number
-  userId: number
-  questionId: number
+  id: ApiId
+  userId: ApiId
+  questionId: ApiId
   code: string
   language: string
   analysisResult: string
@@ -241,20 +243,20 @@ export interface AiCodeAnalysis {
 
 // ===== AI 题目解析 =====
 export interface AiQuestionParseRequest {
-  questionId: number
+  questionId: ApiId
 }
 
 export interface AiQuestionParseResponse {
-  questionId: number
+  questionId: ApiId
   analysis: string
-  similarQuestionIds: number[]
+  similarQuestionIds: ApiId[]
 }
 
 // ===== AI 错题本 =====
 export interface WrongQuestionVO {
-  id: number
-  userId: number
-  questionId: number
+  id: ApiId
+  userId: ApiId
+  questionId: ApiId
   wrongCode: string
   wrongJudgeResult: string
   wrongAnalysis: string
@@ -264,7 +266,7 @@ export interface WrongQuestionVO {
 }
 
 export interface WrongQuestionReviewRequest {
-  wrongQuestionId: number
+  wrongQuestionId: ApiId
 }
 
 // ===== 评论 =====

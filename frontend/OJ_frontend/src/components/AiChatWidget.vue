@@ -118,7 +118,7 @@ function handleSend() {
   sseController = fetchSSE('/api/ai/chat/stream', {
     chatId: chatId.value,
     message: text,
-    questionId: props.questionId,
+    questionId: String(props.questionId),
   }, {
     onToken(token) {
       messages.value[aiIdx].content += token

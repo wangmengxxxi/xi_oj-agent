@@ -12,6 +12,7 @@ import type {
   AiQuestionParseResponse,
   WrongQuestionVO,
   WrongQuestionReviewRequest,
+  ApiId,
 } from '@/types'
 
 // ===== AI Chat =====
@@ -43,8 +44,8 @@ export const getAiCodeHistory = (questionId?: number | string, pageSize?: number
 export const aiQuestionParse = (data: AiQuestionParseRequest) =>
   request.post<BaseResponse<AiQuestionParseResponse>>('/ai/question/parse', data)
 
-export const getAiSimilarQuestions = (questionId: number | string) =>
-  request.get<BaseResponse<number[]>>('/ai/question/similar', { params: { questionId } })
+export const getAiSimilarQuestions = (questionId: ApiId) =>
+  request.get<BaseResponse<ApiId[]>>('/ai/question/similar', { params: { questionId } })
 
 // ===== AI Wrong Question =====
 export const getWrongQuestionList = () =>
@@ -53,7 +54,7 @@ export const getWrongQuestionList = () =>
 export const getDueWrongQuestionList = () =>
   request.get<BaseResponse<WrongQuestionVO[]>>('/ai/wrong-question/due')
 
-export const getWrongQuestionAnalysis = (wrongQuestionId: number) =>
+export const getWrongQuestionAnalysis = (wrongQuestionId: ApiId) =>
   request.get<BaseResponse<string>>('/ai/wrong-question/analysis', {
     params: { wrongQuestionId },
   })
