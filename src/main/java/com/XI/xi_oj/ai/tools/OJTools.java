@@ -514,9 +514,11 @@ public class OJTools {
             sb.append(String.format("\n【%d. %s】AC率: %s%% | 失败: %s次\n", rank++, tag, acRate, failCount));
 
             String knowledge = ojKnowledgeRetriever.retrieveByType(tag, "知识点", 2, 0.6);
-            if (knowledge != null && !knowledge.equals("无相关知识点")) {
+            if (isRelevantKnowledge(tag, knowledge)) {
                 String truncated = knowledge.length() > 200 ? knowledge.substring(0, 200) + "..." : knowledge;
                 sb.append("  知识点回顾：\n  ").append(truncated.replace("\n", "\n  ")).append("\n");
+            } else {
+                sb.append("  知识点回顾：暂无高置信度匹配资料，建议先复盘本标签下的错题和基础模板。\n");
             }
 
             QueryWrapper<Question> wrapper = new QueryWrapper<>();
@@ -530,27 +532,45 @@ public class OJTools {
             if (recommended != null && !recommended.isEmpty()) {
                 sb.append("  推荐练习：\n");
                 for (Question q : recommended) {
-                    sb.append(String.format("  - [%s](/view/question/%d) | 难度: %s\n",
-                            q.getTitle(), q.getId(), q.getDifficulty()));
+                    sb.append(String.format("  - [《%s》（ID：%d）](/view/question/%d) | 难度: %s\n",
+                            q.getTitle(), q.getId(), q.getId(), q.getDifficulty()));
                 }
             }
 
+            Map<Long, Question> wrongQuestionMap = new LinkedHashMap<>();
+            for (WrongQuestionVO w : allWrong) {
+                Question q = questionService.getById(w.getQuestionId());
+                if (q != null && q.getTags() != null && q.getTags().contains(tag)) {
+                    wrongQuestionMap.putIfAbsent(w.getQuestionId(), q);
+                }
+                if (wrongQuestionMap.size() >= 3) {
+                    break;
+                }
+            }
             List<WrongQuestionVO> tagWrong = allWrong.stream()
-                    .filter(w -> {
-                        Question q = questionService.getById(w.getQuestionId());
-                        return q != null && q.getTags() != null && q.getTags().contains(tag);
-                    })
+                    .filter(w -> wrongQuestionMap.containsKey(w.getQuestionId()))
                     .limit(3)
                     .toList();
             if (!tagWrong.isEmpty()) {
                 sb.append("  需要复习的错题：\n");
                 for (WrongQuestionVO w : tagWrong) {
-                    sb.append(String.format("  - [#%d](/view/question/%d) | 错误: %s\n",
-                            w.getQuestionId(), w.getQuestionId(), w.getWrongJudgeResult()));
+                    Question q = wrongQuestionMap.get(w.getQuestionId());
+                    String title = q != null ? q.getTitle() : "未知题目";
+                    sb.append(String.format("  - [《%s》（ID：%d）](/view/question/%d) | 错误: %s\n",
+                            title, w.getQuestionId(), w.getQuestionId(), w.getWrongJudgeResult()));
                 }
             }
         }
 
         return sb.toString();
+    }
+
+    private boolean isRelevantKnowledge(String tag, String knowledge) {
+        if (tag == null || tag.isBlank()
+                || knowledge == null || knowledge.isBlank()
+                || knowledge.equals("无相关知识点")) {
+            return false;
+        }
+        return knowledge.contains(tag.trim());
     }
 }
